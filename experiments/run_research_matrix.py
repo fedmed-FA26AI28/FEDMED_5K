@@ -20,13 +20,21 @@ def jobs(phase):
             for strategy in ("fedavg", "coverage"):
                 yield {"model": "tiny_cnn", "size": 64, "augment": True,
                        "strategy": strategy, "alpha": 0.1, "seed": seed}
+    elif phase == "distillation":
+        for seed in (42, 43, 44):
+            for strategy in ("fedavg", "coverage", "vacant_distill", "coverage_distill"):
+                yield {"model": "tiny_cnn", "size": 64, "augment": True,
+                       "strategy": strategy, "alpha": 0.1, "seed": seed}
+            yield {"model": "tiny_cnn", "size": 64, "augment": True,
+                   "strategy": "coverage", "alpha": 0.1, "seed": seed,
+                   "coverage_kappa": 1e12}
     else:
         raise ValueError(phase)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=["pilot", "sensitivity"])
+    parser.add_argument("phase", choices=["pilot", "sensitivity", "distillation"])
     parser.add_argument("--execute", action="store_true", help="Run every job; default only prints commands")
     parser.add_argument("--rounds", type=int, default=30)
     parser.add_argument("--local_epochs", type=int, default=1)
@@ -39,6 +47,8 @@ def main():
                    "--model", job["model"], "--size", str(job["size"]),
                    "--strategy", job["strategy"], "--alpha", str(job["alpha"]),
                    "--seed", str(job["seed"]), "--client_gpus", str(args.client_gpus)]
+        if "coverage_kappa" in job:
+            command.extend(("--coverage_kappa", str(job["coverage_kappa"])))
         if job["augment"]:
             command.append("--augment")
         print(" ".join(command), flush=True)

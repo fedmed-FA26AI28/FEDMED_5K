@@ -7,6 +7,7 @@ import time
 import copy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from algorithms.coverage import coverage_head_penalty, logit_adjustment
+from algorithms.vacant_distillation import vacant_class_distillation_loss
 
 def train(
     model,
@@ -24,6 +25,10 @@ def train(
     global_head=None,
     proximal_mu: float = 0.0,
     global_params=None,
+    global_teacher=None,
+    distill_mu: float = 0.0,
+    distill_temperature: float = 2.0,
+    distill_max_count: int = 0,
 ):
 
     criterion = nn.CrossEntropyLoss()
@@ -53,7 +58,8 @@ def train(
 
     history ={
         "loss": [],
-        "accuracy": []
+        "accuracy": [],
+        "distill_loss": [],
     }
 
     if val_loader is not None:
@@ -66,6 +72,7 @@ def train(
         model.train() 
         
         running_loss = 0.0
+        running_distill_loss = 0.0
         correct = 0
         total = 0
         for images, labels in train_loader:
@@ -80,6 +87,16 @@ def train(
                 else outputs
             )
             loss = criterion(adjusted_outputs, labels)
+            if global_teacher is not None:
+                with torch.no_grad():
+                    teacher_outputs = global_teacher(images)
+                distill_loss = vacant_class_distillation_loss(
+                    outputs, teacher_outputs, class_counts,
+                    temperature=distill_temperature,
+                    max_count=distill_max_count,
+                )
+                loss = loss + distill_mu * distill_loss
+                running_distill_loss += distill_loss.detach().item() * images.size(0)
             if head_mu > 0:
                 loss = loss + coverage_head_penalty(
                     model,
@@ -107,6 +124,7 @@ def train(
 
         history['loss'].append(epoch_loss)
         history['accuracy'].append(epoch_accuracy)
+        history['distill_loss'].append(running_distill_loss / total)
         
         #Kẹp Learning Rate hiện tại vào chuỗi thông báo
         current_lr = optimizer.param_groups[0]['lr']
@@ -176,6 +194,7 @@ def train(
         "training_time": training_time,
         "final_loss": history['loss'][-1] if history['loss'] else 0.0,
         "final_accuracy": history['accuracy'][-1] if history['accuracy'] else 0.0,
+        "final_distill_loss": history['distill_loss'][-1] if history['distill_loss'] else 0.0,
         "num_samples": total,
         "history": history
     }

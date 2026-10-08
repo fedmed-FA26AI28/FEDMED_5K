@@ -7,6 +7,7 @@ Cách dùng:
 
 import argparse
 import json
+import math
 import datetime
 import hashlib
 import time
@@ -41,12 +42,16 @@ if hasattr(sys.stdout, "reconfigure"):
 def main():
     parser = argparse.ArgumentParser(description="FedMedAI - FL Server (Real Deployment)")
     parser.add_argument("--strategy",    type=str, default="fedavg",
-                        choices=["fedavg", "fedprox", "coverage", "balanced", "logit_only", "head_only"])
+                        choices=["fedavg", "fedprox", "coverage", "balanced", "logit_only", "head_only", "vacant_distill", "coverage_distill"])
     parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
     parser.add_argument("--size", type=int, choices=[28, 64], default=28)
     parser.add_argument("--logit_tau", type=float, default=1.0)
     parser.add_argument("--head_mu", type=float, default=0.01)
     parser.add_argument("--coverage_kappa", type=float, default=32.0)
+    parser.add_argument("--distill_mu", type=float, default=0.1)
+    parser.add_argument("--distill_temperature", type=float, default=2.0)
+    parser.add_argument("--distill_max_count", type=int, default=0)
+    parser.add_argument("--distill_warmup_rounds", type=int, default=1)
     parser.add_argument("--num_clients", type=int, default=1,
                         help="Số lượng client Jetson sẽ kết nối")
     parser.add_argument("--rounds",      type=int, default=NUM_ROUNDS,
@@ -58,6 +63,15 @@ def main():
     parser.add_argument("--port",        type=int, default=8080,
                         help="Port gRPC (mặc định 8080)")
     args = parser.parse_args()
+    if args.strategy in {"vacant_distill", "coverage_distill"}:
+        if not math.isfinite(args.distill_mu) or args.distill_mu <= 0:
+            parser.error("--distill_mu must be finite and positive")
+        if not math.isfinite(args.distill_temperature) or args.distill_temperature <= 0:
+            parser.error("--distill_temperature must be finite and positive")
+        if args.distill_max_count < 0 or args.distill_warmup_rounds < 0:
+            parser.error("distillation count and warmup must be non-negative")
+        if args.rounds <= args.distill_warmup_rounds:
+            parser.error("--rounds must exceed --distill_warmup_rounds")
 
     # ─── Khởi tạo Global Model ───────────────────────────────────────────────
     net         = build_model(args.model, num_classes=8)
@@ -118,11 +132,18 @@ def main():
         config = lr_scheduler.get_config()
         config.update({"server_round": server_round,
                        "balanced_sampling": args.strategy == "balanced"})
-        if args.strategy in {"coverage", "logit_only", "head_only"}:
+        if args.strategy in {"coverage", "logit_only", "head_only", "coverage_distill"}:
             config.update({
-                "logit_tau": args.logit_tau if args.strategy in {"coverage", "logit_only"} else 0.0,
-                "head_mu": args.head_mu if args.strategy in {"coverage", "head_only"} else 0.0,
+                "logit_tau": args.logit_tau if args.strategy in {"coverage", "logit_only", "coverage_distill"} else 0.0,
+                "head_mu": args.head_mu if args.strategy in {"coverage", "head_only", "coverage_distill"} else 0.0,
                 "coverage_kappa": args.coverage_kappa,
+            })
+        if args.strategy in {"vacant_distill", "coverage_distill"}:
+            config.update({
+                "distill_mu": args.distill_mu,
+                "distill_temperature": args.distill_temperature,
+                "distill_max_count": args.distill_max_count,
+                "distill_warmup_rounds": args.distill_warmup_rounds,
             })
         return config
     strategy.on_fit_config_fn = fit_config

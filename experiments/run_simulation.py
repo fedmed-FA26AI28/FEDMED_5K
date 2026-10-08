@@ -11,6 +11,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import time
 from pathlib import Path
 
@@ -220,6 +221,10 @@ def run_one(
     prior_smoothing: float = 1.0,
     head_mu: float = 0.01,
     coverage_kappa: float = 32.0,
+    distill_mu: float = 0.1,
+    distill_temperature: float = 2.0,
+    distill_max_count: int = 0,
+    distill_warmup_rounds: int = 1,
     seed: int = DEFAULT_SEED,
     size: int = 28,
     model_name: str = "legacy",
@@ -234,6 +239,15 @@ def run_one(
         raise ValueError("calibration_fraction must be in (0, 1)")
     if final_test and not locked_config:
         raise ValueError("final test requires --locked_config from a development run")
+    if strategy_name in {"vacant_distill", "coverage_distill"}:
+        if not math.isfinite(distill_mu) or distill_mu <= 0:
+            raise ValueError("distill_mu must be finite and positive")
+        if not math.isfinite(distill_temperature) or distill_temperature <= 0:
+            raise ValueError("distill_temperature must be finite and positive")
+        if distill_max_count < 0 or distill_warmup_rounds < 0:
+            raise ValueError("distillation count and warmup must be non-negative")
+        if num_rounds <= distill_warmup_rounds:
+            raise ValueError("rounds must exceed distill_warmup_rounds")
 
     print(f"\n{'='*65}")
     print(f"  FL | clients={num_clients} | alpha={alpha}"
@@ -326,6 +340,7 @@ def run_one(
         patience=LR_PATIENCE, min_lr=LR_MIN)
 
     history_acc  = []
+    fit_metrics_history = []
     round_times  = []
     round_start  = [time.time()]
     actual_rounds = [0]
@@ -338,6 +353,7 @@ def run_one(
         aggregated = orig_agg_fit(server_round, results, failures)
         if aggregated is not None and aggregated[0] is not None:
             strategy.latest_parameters = aggregated[0]
+            fit_metrics_history.append({"round": server_round, **aggregated[1]})
         return aggregated
 
     def agg_with_tracking(server_round, results, failures):
@@ -369,15 +385,22 @@ def run_one(
         config = lr_scheduler.get_config()
         config["server_round"] = _round
         config["balanced_sampling"] = strategy_name == "balanced"
-        if strategy_name in {"coverage", "logit_only", "head_only"}:
+        if strategy_name in {"coverage", "logit_only", "head_only", "coverage_distill"}:
             config.update(
                 {
-                    "logit_tau": logit_tau if strategy_name in {"coverage", "logit_only"} else 0.0,
+                    "logit_tau": logit_tau if strategy_name in {"coverage", "logit_only", "coverage_distill"} else 0.0,
                     "prior_smoothing": prior_smoothing,
-                    "head_mu": head_mu if strategy_name in {"coverage", "head_only"} else 0.0,
+                    "head_mu": head_mu if strategy_name in {"coverage", "head_only", "coverage_distill"} else 0.0,
                     "coverage_kappa": coverage_kappa,
                 }
             )
+        if strategy_name in {"vacant_distill", "coverage_distill"}:
+            config.update({
+                "distill_mu": distill_mu,
+                "distill_temperature": distill_temperature,
+                "distill_max_count": distill_max_count,
+                "distill_warmup_rounds": distill_warmup_rounds,
+            })
         return config
 
     strategy.on_fit_config_fn = fit_config
@@ -445,6 +468,7 @@ def run_one(
         "final_accuracy": float(history_acc[-1]) if history_acc else 0.0,
         "convergence_round": convergence_round,
         "accuracy_history": history_acc,
+        "fit_metrics_history": fit_metrics_history,
         "total_time_s": round(total_time, 1),
         "avg_time_per_round_s": round(
             sum(round_times) / len(round_times) if round_times else 0, 2),
@@ -462,11 +486,18 @@ def run_one(
         "calibration_fraction": calibration_fraction,
         "conformal_alpha": conformal_alpha,
         "coverage_objective": {
-            "enabled": strategy_name in {"coverage", "logit_only", "head_only"},
-            "logit_tau": logit_tau if strategy_name in {"coverage", "logit_only"} else 0.0,
+            "enabled": strategy_name in {"coverage", "logit_only", "head_only", "coverage_distill"},
+            "logit_tau": logit_tau if strategy_name in {"coverage", "logit_only", "coverage_distill"} else 0.0,
             "prior_smoothing": prior_smoothing,
-            "head_mu": head_mu if strategy_name in {"coverage", "head_only"} else 0.0,
+            "head_mu": head_mu if strategy_name in {"coverage", "head_only", "coverage_distill"} else 0.0,
             "coverage_kappa": coverage_kappa,
+        },
+        "vacant_distillation": {
+            "enabled": strategy_name in {"vacant_distill", "coverage_distill"},
+            "distill_mu": distill_mu if strategy_name in {"vacant_distill", "coverage_distill"} else 0.0,
+            "temperature": distill_temperature,
+            "max_count": distill_max_count,
+            "warmup_rounds": distill_warmup_rounds,
         },
         "train_partition_sizes": [len(indices) for indices in partition],
         "train_partition_hashes": [
@@ -496,6 +527,9 @@ def run_one(
             "conformal_alpha": conformal_alpha, "logit_tau": logit_tau,
             "prior_smoothing": prior_smoothing, "head_mu": head_mu,
             "coverage_kappa": coverage_kappa, "seed": seed, "size": size,
+            "distill_mu": distill_mu, "distill_temperature": distill_temperature,
+            "distill_max_count": distill_max_count,
+            "distill_warmup_rounds": distill_warmup_rounds,
             "model": model_name, "augment": augment, "normalization": normalization_mode,
             "early_stop_patience": early_stop_patience,
         }
@@ -607,6 +641,10 @@ def main():
     parser.add_argument("--prior_smoothing", type=float, default=1.0)
     parser.add_argument("--head_mu", type=float, default=0.01)
     parser.add_argument("--coverage_kappa", type=float, default=32.0)
+    parser.add_argument("--distill_mu", type=float, default=0.1)
+    parser.add_argument("--distill_temperature", type=float, default=2.0)
+    parser.add_argument("--distill_max_count", type=int, default=0)
+    parser.add_argument("--distill_warmup_rounds", type=int, default=1)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--size", type=int, choices=[28, 64], default=28)
     parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
@@ -662,6 +700,10 @@ def main():
                         prior_smoothing=args.prior_smoothing,
                         head_mu=args.head_mu,
                         coverage_kappa=args.coverage_kappa,
+                        distill_mu=args.distill_mu,
+                        distill_temperature=args.distill_temperature,
+                        distill_max_count=args.distill_max_count,
+                        distill_warmup_rounds=args.distill_warmup_rounds,
                         seed=args.seed, size=args.size, model_name=args.model,
                         augment=args.augment, normalization_mode=args.normalization,
                         final_test=args.final_test, locked_config=args.locked_config,
@@ -686,6 +728,10 @@ def main():
             prior_smoothing=args.prior_smoothing,
             head_mu=args.head_mu,
             coverage_kappa=args.coverage_kappa,
+            distill_mu=args.distill_mu,
+            distill_temperature=args.distill_temperature,
+            distill_max_count=args.distill_max_count,
+            distill_warmup_rounds=args.distill_warmup_rounds,
             seed=args.seed, size=args.size, model_name=args.model,
             augment=args.augment, normalization_mode=args.normalization,
             final_test=args.final_test, locked_config=args.locked_config,

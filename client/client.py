@@ -11,6 +11,7 @@ from algorithms.coverage import (
     coverage_weights,
     snapshot_classifier_head,
 )
+from algorithms.vacant_distillation import frozen_global_teacher
 from client.evaluate import evaluate
 from client.train import train
 from datasets.sampling import balanced_loader
@@ -99,6 +100,14 @@ class FlowerClient(fl.client.NumPyClient):
         proximal_mu = float(config.get("proximal_mu", 0.0))
         coverage_kappa = float(config.get("coverage_kappa", 32.0))
         global_head = snapshot_classifier_head(self.net) if head_mu > 0 else None
+        distill_mu = float(config.get("distill_mu", 0.0))
+        distill_max_count = int(config.get("distill_max_count", 0))
+        global_teacher = frozen_global_teacher(
+            self.net, self.class_counts, distill_mu,
+            server_round=int(config.get("server_round", 0)),
+            warmup_rounds=int(config.get("distill_warmup_rounds", 1)),
+            max_count=distill_max_count,
+        )
         optimizer = torch.optim.Adam(self.net.parameters(), lr=current_lr)
         train_loader = self.client_train
         if bool(config.get("balanced_sampling", False)):
@@ -124,6 +133,10 @@ class FlowerClient(fl.client.NumPyClient):
                 [parameter.detach().clone() for parameter in self.net.parameters()]
                 if proximal_mu > 0 else None
             ),
+            global_teacher=global_teacher,
+            distill_mu=distill_mu,
+            distill_temperature=float(config.get("distill_temperature", 2.0)),
+            distill_max_count=distill_max_count,
         )
         result_metrics = {
             "train_loss": float(metrics["final_loss"]),
@@ -134,6 +147,8 @@ class FlowerClient(fl.client.NumPyClient):
             "num_classes_present": int((self.class_counts > 0).sum().item()),
             "logit_tau": logit_tau,
             "head_mu": head_mu,
+            "distill_loss": float(metrics["final_distill_loss"]),
+            "distill_active_classes": int((self.class_counts <= distill_max_count).sum().item()) if global_teacher is not None else 0,
         }
         if head_mu > 0:
             result_metrics["coverage_weight_mean"] = float(

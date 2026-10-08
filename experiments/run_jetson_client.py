@@ -22,6 +22,7 @@ from models.cnn import build_model, get_parameters, set_parameters
 from client.train import train
 from client.evaluate import evaluate
 from algorithms.coverage import count_client_classes, snapshot_classifier_head
+from algorithms.vacant_distillation import frozen_global_teacher
 from datasets.sampling import balanced_loader
 from torch.utils.data import DataLoader, Subset
 from datasets.medmnist_code import get_bloodmnist_dataset, build_transform
@@ -199,6 +200,14 @@ class JetsonFlowerClient(fl.client.NumPyClient):
         current_lr = float(config.get("lr", self.lr))
         optimizer  = torch.optim.Adam(self.net.parameters(), lr=current_lr)
         head_mu = float(config.get("head_mu", 0.0))
+        distill_mu = float(config.get("distill_mu", 0.0))
+        distill_max_count = int(config.get("distill_max_count", 0))
+        global_teacher = frozen_global_teacher(
+            self.net, self.class_counts, distill_mu,
+            server_round=int(config.get("server_round", 0)),
+            warmup_rounds=int(config.get("distill_warmup_rounds", 1)),
+            max_count=distill_max_count,
+        )
         local_train = self.train_loader
         if bool(config.get("balanced_sampling", False)):
             local_train = balanced_loader(
@@ -225,6 +234,10 @@ class JetsonFlowerClient(fl.client.NumPyClient):
                 [parameter.detach().clone() for parameter in self.net.parameters()]
                 if float(config.get("proximal_mu", 0.0)) > 0 else None
             ),
+            global_teacher=global_teacher,
+            distill_mu=distill_mu,
+            distill_temperature=float(config.get("distill_temperature", 2.0)),
+            distill_max_count=distill_max_count,
         )
         self.fit_time_per_round.append(round(time.time() - t0, 2))
 
@@ -237,6 +250,7 @@ class JetsonFlowerClient(fl.client.NumPyClient):
             "train_loss": float(train_metrics["final_loss"]),
             "train_accuracy": float(train_metrics["final_accuracy"]),
             "upload_mb": float(upload_mb),
+            "distill_loss": float(train_metrics["final_distill_loss"]),
         }
 
     def evaluate(self, parameters, config):

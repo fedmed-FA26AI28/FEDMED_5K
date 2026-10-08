@@ -14,6 +14,7 @@ from flwr.server.strategy import (
 ALL_STRATEGIES = [
     "coverage",
     "balanced", "logit_only", "head_only",
+    "vacant_distill", "coverage_distill",
     "fedavg",       # Baseline chuẩn
     "fedavgm",      # FedAvg + Momentum
     "fedprox",      # Tốt nhất cho Non-IID
@@ -67,7 +68,7 @@ def get_strategy(strategy_name: str, num_clients: int,
 
     name = strategy_name.lower()
 
-    if name in {"fedavg", "coverage", "balanced", "logit_only", "head_only"}:
+    if name in {"fedavg", "coverage", "balanced", "logit_only", "head_only", "vacant_distill", "coverage_distill"}:
         return FedAvg(**base)
 
     elif name == "fedprox":

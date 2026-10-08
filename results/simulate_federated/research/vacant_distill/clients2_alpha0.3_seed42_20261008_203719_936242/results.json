@@ -1,0 +1,209 @@
+{
+    "strategy": "vacant_distill",
+    "num_clients": 2,
+    "alpha": 0.3,
+    "model": "tiny_cnn",
+    "size": 28,
+    "augment": false,
+    "normalization": "fixed",
+    "normalization_stats": null,
+    "seed": 42,
+    "final_test_enabled": false,
+    "client_resources": {
+        "num_cpus": 1.0,
+        "num_gpus": 0.0
+    },
+    "local_epochs": 5,
+    "fl_rounds_target": 2,
+    "early_stop_patience": 0,
+    "fl_rounds_actual": 2,
+    "best_accuracy": 0.5719298245614035,
+    "final_accuracy": 0.5719298245614035,
+    "convergence_round": 2,
+    "accuracy_history": [
+        0.22339181286549709,
+        0.5719298245614035
+    ],
+    "fit_metrics_history": [
+        {
+            "round": 1,
+            "train_loss": 1.488775910437107,
+            "train_accuracy": 0.49375,
+            "val_loss": 2.0113172543700926,
+            "val_accuracy": 0.23237301908680993,
+            "num_val_samples": 427.5875,
+            "num_classes_present": 7.4875,
+            "logit_tau": 0.0,
+            "head_mu": 0.0,
+            "distill_loss": 0.0,
+            "distill_active_classes": 0.0
+        },
+        {
+            "round": 2,
+            "train_loss": 1.3670660853385925,
+            "train_accuracy": 0.6312500000000001,
+            "val_loss": 1.8836340589936995,
+            "val_accuracy": 0.3325598241255527,
+            "num_val_samples": 427.5875,
+            "num_classes_present": 7.4875,
+            "logit_tau": 0.0,
+            "head_mu": 0.0,
+            "distill_loss": 0.1582063902169466,
+            "distill_active_classes": 4.0
+        }
+    ],
+    "total_time_s": 15.4,
+    "avg_time_per_round_s": 7.71,
+    "model_size_kb": 79.3,
+    "comm_per_round_kb": 317.19,
+    "total_comm_mb": 0.62,
+    "final_test_metrics": null,
+    "final_validation_metrics": {
+        "split": "val_monitor",
+        "num_samples": 855,
+        "accuracy": 0.5719298124313354,
+        "f1_macro": 0.34979502668852364,
+        "worst_class_recall": 0.0,
+        "per_class_f1": [
+            0.0,
+            0.8873239436619719,
+            0.0,
+            0.4908256880733945,
+            0.0,
+            0.0,
+            0.7258485639686684,
+            0.6943620178041543
+        ],
+        "per_class_recall": [
+            0.0,
+            0.8076923076923077,
+            0.0,
+            0.7379310344827587,
+            0.0,
+            0.0,
+            0.8323353293413174,
+            1.0
+        ],
+        "confusion_matrix": [
+            [
+                0,
+                2,
+                0,
+                57,
+                0,
+                0,
+                2,
+                0
+            ],
+            [
+                0,
+                126,
+                0,
+                21,
+                0,
+                0,
+                9,
+                0
+            ],
+            [
+                0,
+                0,
+                0,
+                7,
+                0,
+                0,
+                8,
+                62
+            ],
+            [
+                0,
+                0,
+                0,
+                107,
+                0,
+                0,
+                34,
+                4
+            ],
+            [
+                0,
+                0,
+                0,
+                22,
+                0,
+                0,
+                21,
+                18
+            ],
+            [
+                0,
+                0,
+                0,
+                68,
+                0,
+                0,
+                3,
+                0
+            ],
+            [
+                0,
+                0,
+                0,
+                9,
+                0,
+                0,
+                139,
+                19
+            ],
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                117
+            ]
+        ],
+        "calibration": {
+            "nll": 1.8622534275054932,
+            "brier": 0.813290536403656,
+            "ece": 0.3910093307495117
+        }
+    },
+    "val_f1_macro": 0.34979502668852364,
+    "val_worst_class_recall": 0.0,
+    "train_samples_requested": 160,
+    "train_samples_used": 160,
+    "local_validation_samples": 855,
+    "calibration_samples": 857,
+    "calibration_fraction": 0.5,
+    "conformal_alpha": 0.1,
+    "coverage_objective": {
+        "enabled": false,
+        "logit_tau": 0.0,
+        "prior_smoothing": 1.0,
+        "head_mu": 0.0,
+        "coverage_kappa": 32.0
+    },
+    "vacant_distillation": {
+        "enabled": true,
+        "distill_mu": 0.1,
+        "temperature": 2.0,
+        "max_count": 10,
+        "warmup_rounds": 1
+    },
+    "train_partition_sizes": [
+        82,
+        78
+    ],
+    "train_partition_hashes": [
+        "2b07e27062773690a79dd80b44a040829498ec8a8b02ec7ad7259172534fe9e0",
+        "61bce240df02a5f66bf2640d2ab81ad34052152861d47a62ef909172e6324134"
+    ],
+    "local_validation_hash": "66372b6a7c6dc5ddcae37cd663c5dd30b65f5a14e6240fd15771ffa1c7ee15d2",
+    "calibration_hash": "2a6ba8e516438051682ca3481bee62354c93a98ba67926597f6531051b347bf4",
+    "peak_gpu_memory_mb": 0.0,
+    "current_gpu_memory_mb": 0.0
+}
