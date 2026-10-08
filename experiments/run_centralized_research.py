@@ -162,7 +162,7 @@ def main():
     parser.add_argument("--train_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--size", type=int, choices=[28, 64], default=64)
-    parser.add_argument("--model", choices=["tiny_cnn", "mobilenet_v3_small"], default="tiny_cnn")
+    parser.add_argument("--model", choices=["tiny_cnn", "tiny_cnn_gn", "mobilenet_v3_small"], default="tiny_cnn")
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--normalization", choices=["fixed", "train"], default="fixed")
     parser.add_argument("--calibration_fraction", type=float, default=0.5)

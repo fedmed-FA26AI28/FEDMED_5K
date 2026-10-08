@@ -104,13 +104,23 @@ class ResearchFlowTests(unittest.TestCase):
             fit_train_normalization(dataset, [0])
 
     def test_matched_cnn_and_mobile_head_round_trip(self):
-        for name in ("tiny_cnn", "mobilenet_v3_small"):
+        for name in ("tiny_cnn", "tiny_cnn_gn", "mobilenet_v3_small"):
             model = build_model(name)
             restored = build_model(name)
             set_parameters(restored, get_parameters(model))
             self.assertEqual(8, restored.fc.out_features)
             with torch.no_grad():
                 self.assertEqual((2, 8), tuple(restored.eval()(torch.zeros(2, 3, 64, 64)).shape))
+
+    def test_groupnorm_tiny_cnn_has_no_client_running_statistics(self):
+        model = build_model("tiny_cnn_gn")
+        self.assertFalse(any(isinstance(layer, torch.nn.BatchNorm2d)
+                             for layer in model.modules()))
+        self.assertEqual(2, sum(isinstance(layer, torch.nn.GroupNorm)
+                                for layer in model.modules()))
+        self.assertFalse(any("running_mean" in name or "running_var" in name
+                             or "num_batches_tracked" in name
+                             for name in model.state_dict()))
 
     def test_balanced_sampler_keeps_local_step_budget(self):
         dataset = LabelDataset([0] * 9 + [1])

@@ -280,7 +280,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train_samples", type=int, default=5000)
     parser.add_argument("--size", type=int, choices=[28, 64], default=28)
-    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
+    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "tiny_cnn_gn", "mobilenet_v3_small"], default="legacy")
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--partition_path", default=None)
     parser.add_argument("--device_type", type=str, default=None,

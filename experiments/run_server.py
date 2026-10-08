@@ -43,7 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description="FedMedAI - FL Server (Real Deployment)")
     parser.add_argument("--strategy",    type=str, default="fedavg",
                         choices=["fedavg", "fedprox", "coverage", "balanced", "logit_only", "head_only", "vacant_distill", "coverage_distill"])
-    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
+    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "tiny_cnn_gn", "mobilenet_v3_small"], default="legacy")
     parser.add_argument("--size", type=int, choices=[28, 64], default=28)
     parser.add_argument("--logit_tau", type=float, default=1.0)
     parser.add_argument("--head_mu", type=float, default=0.01)

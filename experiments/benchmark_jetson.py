@@ -138,7 +138,7 @@ def benchmark(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="tiny_cnn")
+    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "tiny_cnn_gn", "mobilenet_v3_small"], default="tiny_cnn")
     parser.add_argument("--strategy", choices=["fedavg", "coverage", "vacant_distill", "coverage_distill"], default="fedavg")
     parser.add_argument("--distill_mu", type=float, default=0.1)
     parser.add_argument("--distill_temperature", type=float, default=2.0)
