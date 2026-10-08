@@ -12,6 +12,8 @@ from flwr.server.strategy import (
 
 # Danh sach day du de dung trong run_simulation.py
 ALL_STRATEGIES = [
+    "coverage",
+    "balanced", "logit_only", "head_only",
     "fedavg",       # Baseline chuẩn
     "fedavgm",      # FedAvg + Momentum
     "fedprox",      # Tốt nhất cho Non-IID
@@ -30,7 +32,16 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
                 weighted_metrics[key] = 0.0
             weighted_metrics[key] += num_examples * float(value)
     # Chia cho tổng số data để ra trung bình
-    return {k: v / total_examples for k, v in weighted_metrics.items()}
+    aggregated = {k: v / total_examples for k, v in weighted_metrics.items()}
+    if metrics and all("accuracy" in values for _, values in metrics):
+        aggregated["worst_client_accuracy"] = min(
+            float(values["accuracy"]) for _, values in metrics
+        )
+    if metrics and all("f1_score" in values for _, values in metrics):
+        aggregated["worst_client_f1_macro"] = min(
+            float(values["f1_score"]) for _, values in metrics
+        )
+    return aggregated
 
 def get_strategy(strategy_name: str, num_clients: int,
                  initial_parameters,
@@ -56,7 +67,7 @@ def get_strategy(strategy_name: str, num_clients: int,
 
     name = strategy_name.lower()
 
-    if name == "fedavg":
+    if name in {"fedavg", "coverage", "balanced", "logit_only", "head_only"}:
         return FedAvg(**base)
 
     elif name == "fedprox":

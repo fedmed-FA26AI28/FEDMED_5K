@@ -63,6 +63,47 @@ class SimpleCNN(nn.Module):
         return x
 
 
+class ResearchCNN(nn.Module):
+    """The same 32/64-channel tiny CNN used in the full-train project."""
+    def __init__(self, num_classes: int = 8):
+        super().__init__()
+        self.conv_block1 = nn.Sequential(nn.Conv2d(3, 32, 3, padding=1), nn.BatchNorm2d(32), nn.ReLU())
+        self.conv_block2 = nn.Sequential(nn.Conv2d(32, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU())
+        self.pool = nn.MaxPool2d(2)
+        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, num_classes)
+
+    def forward(self, x):
+        x = self.pool(self.conv_block2(self.conv_block1(x)))
+        return self.fc(torch.flatten(self.global_avg_pool(x), 1))
+
+
+class MobileNetSmall(nn.Module):
+    """Untrained MobileNetV3-Small with an exposed linear FL classifier head."""
+    def __init__(self, num_classes: int = 8):
+        super().__init__()
+        from torchvision.models import mobilenet_v3_small
+        self.backbone = mobilenet_v3_small(weights=None)
+        features = self.backbone.classifier[-1].in_features
+        self.backbone.classifier[-1] = nn.Identity()
+        self.fc = nn.Linear(features, num_classes)
+
+    def forward(self, x):
+        return self.fc(self.backbone(x))
+
+
+def build_model(name: str = "legacy", num_classes: int = 8):
+    """Use the same `tiny_cnn` and `mobilenet_v3_small` in both data budgets."""
+    factories = {
+        "legacy": lambda: SimpleCNN(num_classes=num_classes),
+        "tiny_cnn": lambda: ResearchCNN(num_classes=num_classes),
+        "mobilenet_v3_small": lambda: MobileNetSmall(num_classes=num_classes),
+    }
+    if name not in factories:
+        raise ValueError(f"unknown model {name!r}; choose from {sorted(factories)}")
+    return factories[name]()
+
+
 def get_parameters(model: nn.Module) -> List[np.ndarray]:
     """Trích xuất trọng số mô hình PyTorch thành danh sách các mảng NumPy."""
     return [val.cpu().numpy() for _, val in model.state_dict().items()]

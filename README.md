@@ -6,6 +6,28 @@ Tài liệu này hướng dẫn chi tiết quy trình triển khai thuật toán
 
 ---
 
+## Research simulation (controlled 5K regime)
+
+For the validation-only experiment matrix, native 64×64 data, model comparisons,
+locked final-test procedure, and Jetson measurements, see [RESEARCH_STUDY.md](RESEARCH_STUDY.md).
+
+The simulator now selects exactly 5,000 stratified examples from the official
+training split before applying the non-IID partition. It never partitions
+validation or test examples as training data.
+
+```powershell
+python -m experiments.run_simulation --strategy coverage --num_clients 10 --alpha 0.3 --rounds 30 --local_epochs 1 --train_samples 5000 --size 64 --model tiny_cnn
+```
+
+For a fair ablation, keep `--seed`, client count, alpha, rounds, and data budget
+identical while running `fedavg`, `coverage --head_mu 0`, `coverage
+--logit_tau 0`, and the full `coverage` configuration.
+
+Half of validation is used for client monitoring and exact final-model
+validation; the other half is held out for temperature/conformal calibration.
+Development runs do not load test. Only `--final_test --locked_config RUN_SPEC`
+loads test once after training and reports final metrics.
+
 ## 1. Yêu Cầu Hệ Thống
 
 | Thành phần | Yêu cầu chi tiết |
@@ -18,6 +40,18 @@ Tài liệu này hướng dẫn chi tiết quy trình triển khai thuật toán
 | **Môi trường Jetson** | PyTorch phiên bản hỗ trợ CUDA (Tối ưu GPU Maxwell) |
 
 ## 2. Tiền Xử Lý Dữ Liệu Ngoại Tuyến (Laptop)
+
+### Mô phỏng nhiều client trên một máy
+
+```powershell
+# Chạy thử nhanh
+python -m experiments.run_simulation --num_clients 5 --rounds 2 --local_epochs 1 --strategy fedavg
+
+# Chạy 10 clients với dữ liệu non-IID
+python -m experiments.run_simulation --num_clients 10 --rounds 50 --local_epochs 5 --alpha 0.3 --strategy fedavg
+```
+
+Mỗi client dùng validation riêng; test chỉ được đánh giá trong final run có cấu hình khóa.
 
 * Chạy tệp mã nguồn `prepare_data.py` trên Laptop để tự động tải và chia bộ dữ liệu BloodMNIST theo phân phối Dirichlet.
 * Kiểm tra thư mục `data` vừa được tạo ra để đảm bảo có đủ các tệp nhị phân dữ liệu cho từng máy khách.

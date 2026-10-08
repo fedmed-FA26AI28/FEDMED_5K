@@ -78,6 +78,7 @@ results_dir: results/simulate_federated
 # De chay het thi de list nay, bot di neu muon test nhanh
 fl_strategies:
   - fedavg
+  - coverage
   - fedprox
 # Global Early Stopping (theo doi Round, khong phai Epoch)
 early_stopping:

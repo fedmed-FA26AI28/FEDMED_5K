@@ -1,0 +1,50 @@
+{
+  "split": "train",
+  "size": 64,
+  "train_samples": 80,
+  "num_clients": 2,
+  "alpha": 0.3,
+  "seed": 42,
+  "class_counts": [
+    6,
+    15,
+    7,
+    13,
+    6,
+    7,
+    15,
+    11
+  ],
+  "client_class_counts": [
+    [
+      5,
+      0,
+      0,
+      12,
+      5,
+      5,
+      8,
+      9
+    ],
+    [
+      1,
+      15,
+      7,
+      1,
+      1,
+      2,
+      7,
+      2
+    ]
+  ],
+  "client_sizes": [
+    44,
+    36
+  ],
+  "classes_missing_per_client": [
+    2,
+    0
+  ],
+  "brightness_mean": 0.7204847437640032,
+  "brightness_std": 0.048783408147209835
+}

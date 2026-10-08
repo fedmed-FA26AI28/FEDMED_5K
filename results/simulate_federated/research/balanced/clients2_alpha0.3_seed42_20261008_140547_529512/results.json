@@ -1,0 +1,52 @@
+{
+    "strategy": "balanced",
+    "num_clients": 2,
+    "alpha": 0.3,
+    "model": "tiny_cnn",
+    "size": 28,
+    "augment": false,
+    "normalization": "fixed",
+    "normalization_stats": null,
+    "seed": 42,
+    "final_test_enabled": false,
+    "local_epochs": 1,
+    "fl_rounds_target": 1,
+    "fl_rounds_actual": 1,
+    "best_accuracy": 0.1368421052631579,
+    "final_accuracy": 0.1368421052631579,
+    "convergence_round": 1,
+    "accuracy_history": [
+        0.1368421052631579
+    ],
+    "total_time_s": 11.6,
+    "avg_time_per_round_s": 11.59,
+    "model_size_kb": 79.3,
+    "comm_per_round_kb": 317.19,
+    "total_comm_mb": 0.31,
+    "final_test_metrics": null,
+    "train_samples_requested": 80,
+    "train_samples_used": 80,
+    "local_validation_samples": 855,
+    "calibration_samples": 857,
+    "calibration_fraction": 0.5,
+    "conformal_alpha": 0.1,
+    "coverage_objective": {
+        "enabled": false,
+        "logit_tau": 0.0,
+        "prior_smoothing": 1.0,
+        "head_mu": 0.0,
+        "coverage_kappa": 32.0
+    },
+    "train_partition_sizes": [
+        44,
+        36
+    ],
+    "train_partition_hashes": [
+        "5148cd70b2c1fa5e2339bd9f1a4b43cd54d8c7e4f9ac1bb5f6face3fe605022e",
+        "fbfebcda7e26d943fd92e9aa06bde94966961926924bd826e4aa087313a5b41c"
+    ],
+    "local_validation_hash": "66372b6a7c6dc5ddcae37cd663c5dd30b65f5a14e6240fd15771ffa1c7ee15d2",
+    "calibration_hash": "2a6ba8e516438051682ca3481bee62354c93a98ba67926597f6531051b347bf4",
+    "peak_gpu_memory_mb": 0.1,
+    "current_gpu_memory_mb": 0.1
+}

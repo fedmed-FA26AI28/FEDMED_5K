@@ -6,6 +6,7 @@ Cách dùng (trên Jetson):
 """
 
 import argparse
+import sys
 import json
 import glob
 import time
@@ -17,20 +18,26 @@ import flwr as fl
 from pathlib import Path
 from datetime import datetime
 
-from models.cnn import SimpleCNN, get_parameters, set_parameters
+from models.cnn import build_model, get_parameters, set_parameters
 from client.train import train
 from client.evaluate import evaluate
+from algorithms.coverage import count_client_classes, snapshot_classifier_head
+from datasets.sampling import balanced_loader
 from torch.utils.data import DataLoader, Subset
-from datasets.medmnist_code import get_medmnist_dataset
+from datasets.medmnist_code import get_bloodmnist_dataset, build_transform
+from datasets.partition import load_partition, stratified_holdout_indices, stratified_validation_partition
 
 import yaml
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs"
-with open(CONFIG_DIR / "experiment.yaml", "r") as f:
+with open(CONFIG_DIR / "experiment.yaml", "r", encoding="utf-8") as f:
     EXP_CFG = yaml.safe_load(f)
-with open(CONFIG_DIR / "jetson.yaml", "r") as f:
+with open(CONFIG_DIR / "jetson.yaml", "r", encoding="utf-8") as f:
     JETSON_CFG = yaml.safe_load(f)
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "real_federated"
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 # ─── HÀM LẤY THÔNG TIN PHẦN CỨNG JETSON ─────────────────────────────────────
@@ -159,12 +166,14 @@ class HardwareMonitor:
 
 # ─── FLOWER CLIENT ────────────────────────────────────────────────────────────
 class JetsonFlowerClient(fl.client.NumPyClient):
-    def __init__(self, net, train_loader, val_loader, test_loader,
-                 local_epochs, lr, device):
+    def __init__(self, net, train_loader, val_loader,
+                 local_epochs, lr, device, client_id=0, seed=42):
         self.net          = net
         self.train_loader = train_loader
         self.val_loader   = val_loader
-        self.test_loader  = test_loader
+        self.client_id = client_id
+        self.seed = seed
+        self.class_counts = count_client_classes(train_loader.dataset, net.fc.out_features)
         self.local_epochs = local_epochs
         self.lr           = lr
         self.device       = device
@@ -179,22 +188,43 @@ class JetsonFlowerClient(fl.client.NumPyClient):
 
     def fit(self, parameters, config):
         """Nhận trọng số Server → train cục bộ → gửi về."""
+        round_seed = self.seed + 1009 * int(config.get("server_round", 0)) + self.client_id
+        torch.manual_seed(round_seed)
+        np.random.seed(round_seed % (2 ** 32 - 1))
         # Đo download (Server gửi xuống)
         download_mb = get_params_size_mb(parameters)
         self.download_mb_per_round.append(download_mb)
 
         set_parameters(self.net, parameters)
-        current_lr = config.get("lr", self.lr)
+        current_lr = float(config.get("lr", self.lr))
         optimizer  = torch.optim.Adam(self.net.parameters(), lr=current_lr)
+        head_mu = float(config.get("head_mu", 0.0))
+        local_train = self.train_loader
+        if bool(config.get("balanced_sampling", False)):
+            local_train = balanced_loader(
+                self.train_loader, self.class_counts,
+                self.seed + 1009 * int(config.get("server_round", 0)) + self.client_id,
+            )
 
         t0 = time.time()
-        train(
+        train_metrics = train(
             model=self.net,
-            train_loader=self.train_loader,
+            train_loader=local_train,
             optimizer=optimizer,
             epochs=self.local_epochs,
             device=self.device,
-            val_loader=self.val_loader
+            val_loader=self.val_loader,
+            class_counts=self.class_counts,
+            logit_tau=float(config.get("logit_tau", 0.0)),
+            prior_smoothing=float(config.get("prior_smoothing", 1.0)),
+            head_mu=head_mu,
+            coverage_kappa=float(config.get("coverage_kappa", 32.0)),
+            global_head=snapshot_classifier_head(self.net) if head_mu > 0 else None,
+            proximal_mu=float(config.get("proximal_mu", 0.0)),
+            global_params=(
+                [parameter.detach().clone() for parameter in self.net.parameters()]
+                if float(config.get("proximal_mu", 0.0)) > 0 else None
+            ),
         )
         self.fit_time_per_round.append(round(time.time() - t0, 2))
 
@@ -203,17 +233,21 @@ class JetsonFlowerClient(fl.client.NumPyClient):
         upload_mb = get_params_size_mb(updated_params)
         self.upload_mb_per_round.append(upload_mb)
 
-        return updated_params, len(self.train_loader.dataset), {}
+        return updated_params, len(self.train_loader.dataset), {
+            "train_loss": float(train_metrics["final_loss"]),
+            "train_accuracy": float(train_metrics["final_accuracy"]),
+            "upload_mb": float(upload_mb),
+        }
 
     def evaluate(self, parameters, config):
         """Nhận trọng số Server → đánh giá → gửi metrics về."""
         set_parameters(self.net, parameters)
 
         t0 = time.time()
-        loss, eval_metrics = evaluate(self.net, self.test_loader, self.device)
+        loss, eval_metrics = evaluate(self.net, self.val_loader, self.device)
         self.eval_time_per_round.append(round(time.time() - t0, 2))
 
-        return loss, len(self.test_loader.dataset), {
+        return loss, len(self.val_loader.dataset), {
             "accuracy":  float(eval_metrics["accuracy"]),
             "precision": float(eval_metrics["precision"]),
             "recall":    float(eval_metrics["recall"]),
@@ -228,6 +262,13 @@ def main():
     parser.add_argument("--port",        type=int, default=8080)
     parser.add_argument("--client_id",   type=int, default=0)
     parser.add_argument("--alpha",       type=float, default=1.0)
+    parser.add_argument("--num_clients", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--train_samples", type=int, default=5000)
+    parser.add_argument("--size", type=int, choices=[28, 64], default=28)
+    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
+    parser.add_argument("--augment", action="store_true")
+    parser.add_argument("--partition_path", default=None)
     parser.add_argument("--device_type", type=str, default=None,
                         help="Ghi đè: jetson_orin hoặc jetson_nano")
     args = parser.parse_args()
@@ -254,36 +295,47 @@ def main():
     print(f"  Batch size: {batch_size}")
 
     # ─── Load partition ──────────────────────────────────────────────────────
-    num_clients    = 1
-    partition_path = (Path(EXP_CFG["partition_save_dir"]) /
-                      f"partition_seed{EXP_CFG['seed']}_alpha{args.alpha}_clients{num_clients}.json")
+    num_clients = args.num_clients
+    partition_path = Path(args.partition_path) if args.partition_path else (
+        Path(EXP_CFG["partition_save_dir"]) /
+        f"partition_seed{args.seed}_alpha{args.alpha}_clients{num_clients}.json"
+    )
     if not partition_path.exists():
         raise FileNotFoundError(
             f"\n[ERROR] Partition file not found: {partition_path}\n"
             f"  Chay tren PC: python -m scripts.distribute_data --client_id {args.client_id}"
         )
-    with open(partition_path, "r") as f:
-        partition = json.load(f)
-
-    client_indices = partition[str(args.client_id)]
+    with open(partition_path, "r", encoding="utf-8") as f:
+        partition_metadata = json.load(f)
+    if partition_metadata.get("split") != "train":
+        raise ValueError("Jetson partition must contain training indices only")
+    if int(partition_metadata.get("total_samples", -1)) != args.train_samples:
+        raise ValueError("partition size differs from --train_samples; regenerate the 5K partition")
+    client_indices = load_partition(str(partition_path))[args.client_id]
     print(f"  Client {args.client_id}: {len(client_indices)} training samples")
 
     # ─── Dataset & Loader ───────────────────────────────────────────────────
-    train_full, val_dataset, test_dataset = get_medmnist_dataset()
+    train_full, _ = get_bloodmnist_dataset("train", download=True, size=args.size)
+    if any(index < 0 or index >= len(train_full) for index in client_indices):
+        raise ValueError("partition contains an out-of-range training index")
+    train_full.transform = build_transform("train", augment=args.augment)
+    val_dataset, _ = get_bloodmnist_dataset("val", download=True, size=args.size)
+    local_val, _ = stratified_holdout_indices(val_dataset, 0.5, seed=args.seed)
+    val_indices = stratified_validation_partition(
+        val_dataset, num_clients, seed=args.seed, eligible_indices=local_val
+    )[args.client_id]
     train_subset = Subset(train_full, client_indices)
+    val_subset = Subset(val_dataset, val_indices)
 
     train_loader = DataLoader(train_subset,  batch_size=batch_size,
                               shuffle=True,  num_workers=num_workers,
                               pin_memory=pin_memory)
-    val_loader   = DataLoader(val_dataset,   batch_size=batch_size,
-                              shuffle=False, num_workers=num_workers,
-                              pin_memory=pin_memory)
-    test_loader  = DataLoader(test_dataset,  batch_size=batch_size,
+    val_loader   = DataLoader(val_subset,   batch_size=batch_size,
                               shuffle=False, num_workers=num_workers,
                               pin_memory=pin_memory)
 
     # ─── Model ──────────────────────────────────────────────────────────────
-    net = SimpleCNN(in_channels=3, num_classes=8).to(device)
+    net = build_model(args.model, num_classes=8).to(device)
 
     # ─── Khởi động hardware monitor ─────────────────────────────────────────
     monitor = HardwareMonitor(interval=3.0)
@@ -297,10 +349,11 @@ def main():
         net=net,
         train_loader=train_loader,
         val_loader=val_loader,
-        test_loader=test_loader,
         local_epochs=EXP_CFG["local_epochs"],
         lr=EXP_CFG["learning_rate"],
         device=device,
+        client_id=args.client_id,
+        seed=args.seed,
     )
 
     t_total_start = time.time()

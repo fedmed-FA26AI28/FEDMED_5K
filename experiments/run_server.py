@@ -7,14 +7,18 @@ Cách dùng:
 
 import argparse
 import json
+import datetime
+import hashlib
 import time
+import sys
 from pathlib import Path
 
 import flwr as fl
+import torch
 import yaml
-from flwr.common import ndarrays_to_parameters
+from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 
-from models.cnn import SimpleCNN, get_parameters
+from models.cnn import build_model, get_parameters, set_parameters
 from server.server import get_strategy, EarlyStoppingCallback, GlobalLRScheduler
 
 # ─── Đọc config ──────────────────────────────────────────────────────────────
@@ -30,11 +34,19 @@ LR_CFG     = CFG.get("lr_scheduler", {})
 # Thư mục lưu kết quả riêng cho Jetson (tách biệt với simulate_federated)
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "real_federated"
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main():
     parser = argparse.ArgumentParser(description="FedMedAI - FL Server (Real Deployment)")
     parser.add_argument("--strategy",    type=str, default="fedavg",
-                        help="Tên strategy: fedavg, fedprox, fedavgm, fedmedian, fedtrimmedavg")
+                        choices=["fedavg", "fedprox", "coverage", "balanced", "logit_only", "head_only"])
+    parser.add_argument("--model", choices=["legacy", "tiny_cnn", "mobilenet_v3_small"], default="legacy")
+    parser.add_argument("--size", type=int, choices=[28, 64], default=28)
+    parser.add_argument("--logit_tau", type=float, default=1.0)
+    parser.add_argument("--head_mu", type=float, default=0.01)
+    parser.add_argument("--coverage_kappa", type=float, default=32.0)
     parser.add_argument("--num_clients", type=int, default=1,
                         help="Số lượng client Jetson sẽ kết nối")
     parser.add_argument("--rounds",      type=int, default=NUM_ROUNDS,
@@ -48,7 +60,7 @@ def main():
     args = parser.parse_args()
 
     # ─── Khởi tạo Global Model ───────────────────────────────────────────────
-    net         = SimpleCNN(in_channels=3, num_classes=8)
+    net         = build_model(args.model, num_classes=8)
     init_params = ndarrays_to_parameters(get_parameters(net))
 
     # ─── Khởi tạo Strategy ───────────────────────────────────────────────────
@@ -64,7 +76,7 @@ def main():
         min_delta=ES_CFG.get("min_delta", 0.001)
     )
     lr_scheduler = GlobalLRScheduler(
-        init_lr=LR,
+        initial_lr=LR,
         factor=LR_CFG.get("factor", 0.5),
         patience=LR_CFG.get("patience", 3),
         min_lr=LR_CFG.get("min_lr", 1e-6)
@@ -102,7 +114,26 @@ def main():
         return agg
 
     strategy.aggregate_evaluate = agg_with_tracking
-    strategy.on_fit_config_fn   = lambda _round: lr_scheduler.get_config()
+    def fit_config(server_round):
+        config = lr_scheduler.get_config()
+        config.update({"server_round": server_round,
+                       "balanced_sampling": args.strategy == "balanced"})
+        if args.strategy in {"coverage", "logit_only", "head_only"}:
+            config.update({
+                "logit_tau": args.logit_tau if args.strategy in {"coverage", "logit_only"} else 0.0,
+                "head_mu": args.head_mu if args.strategy in {"coverage", "head_only"} else 0.0,
+                "coverage_kappa": args.coverage_kappa,
+            })
+        return config
+    strategy.on_fit_config_fn = fit_config
+    strategy.latest_parameters = init_params
+    original_aggregate_fit = strategy.aggregate_fit
+    def aggregate_fit(server_round, results, failures):
+        aggregated = original_aggregate_fit(server_round, results, failures)
+        if aggregated is not None and aggregated[0] is not None:
+            strategy.latest_parameters = aggregated[0]
+        return aggregated
+    strategy.aggregate_fit = aggregate_fit
 
     # ─── Khởi động Server ────────────────────────────────────────────────────
     server_address = f"{args.host}:{args.port}"
@@ -144,9 +175,19 @@ def main():
     }
 
     # Tên thư mục: real_clients1_alpha1.0_fedavg
-    run_name = f"real_clients{args.num_clients}_alpha{args.alpha}_{args.strategy}"
+    run_name = (f"real_clients{args.num_clients}_alpha{args.alpha}_{args.strategy}_"
+                f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}")
     out_dir  = RESULTS_DIR / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
+    final_arrays = parameters_to_ndarrays(strategy.latest_parameters)
+    set_parameters(net, final_arrays)
+    torch.save(net.state_dict(), out_dir / "global_model.pt")
+    result["model"] = args.model
+    result["size"] = args.size
+    result["global_parameter_sha256"] = hashlib.sha256(
+        b"".join(array.tobytes() for array in final_arrays)
+    ).hexdigest()
+    result["final_test_metrics"] = None  # Physical integration is validation-only.
 
     out_file = out_dir / "results.json"
     with open(out_file, "w", encoding="utf-8") as f:

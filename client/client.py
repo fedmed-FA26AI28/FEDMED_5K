@@ -1,98 +1,153 @@
-"""FL Client - Wrapper Flower cho SimpleCNN."""
+"""Flower virtual clients used by the single-machine FL simulation."""
 
-import torch
 import flwr as fl
-from models.cnn import get_parameters, set_parameters, SimpleCNN
+import numpy as np
+import torch
 from flwr.common import Context
-from client.train import train
+from torch.utils.data import DataLoader, Subset
+
+from algorithms.coverage import (
+    count_client_classes,
+    coverage_weights,
+    snapshot_classifier_head,
+)
 from client.evaluate import evaluate
+from client.train import train
+from datasets.sampling import balanced_loader
+from datasets.medmnist_code import load_simulation_datasets
+from models.cnn import build_model, get_parameters, set_parameters
 
 
-def make_client_fn(train_dataset, val_dataset, test_dataset,
-                   partition, local_epochs, lr, device):
-    """
-    Factory function: trả về hàm client_fn dùng cho Flower Simulation.
-
-    Flower sẽ gọi client_fn(cid) mỗi khi cần tạo 1 client ảo.
-    partition: List[List[int]] — danh sách indices cho từng client.
-    """
-    from torch.utils.data import DataLoader, Subset
+def make_client_fn(
+    train_partition,
+    val_partition,
+    local_epochs,
+    lr,
+    device,
+    num_classes=8,
+    batch_size=32,
+    model_name="legacy",
+    seed=42,
+    size=28,
+    augment=False,
+    normalization=None,
+):
+    """Return the factory Flower uses to create isolated virtual clients."""
 
     def client_fn(context: Context) -> fl.client.Client:
         client_id = int(context.node_config["partition-id"])
-
-        # Tạo Subset từ indices đã chia ở Phase 4
-        train_subset  = Subset(train_dataset, partition[client_id])
-        train_loader  = DataLoader(train_subset, batch_size=32,
-                                   shuffle=True, num_workers=0)
-
-        # Val loader: dùng chung 1 val set (mỗi client đánh giá trên val gốc)
-        val_loader    = DataLoader(val_dataset,  batch_size=32,
-                                   shuffle=False, num_workers=0)
-
-        test_loader   = DataLoader(test_dataset, batch_size=32,
-                                   shuffle=False, num_workers=0)
-
-        # Mỗi client có model riêng (sẽ nhận trọng số từ Server khi fit)
-        net = SimpleCNN(in_channels=3, num_classes=8).to(device)
-
+        train_dataset, val_dataset = load_simulation_datasets(size, augment, normalization)
+        client_train = DataLoader(
+            Subset(train_dataset, train_partition[client_id]),
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0,
+        )
+        client_val = DataLoader(
+            Subset(val_dataset, val_partition[client_id]),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
+        )
+        net = build_model(model_name, num_classes=num_classes).to(device)
         return FlowerClient(
             net=net,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            test_loader=test_loader,
+            client_train=client_train,
+            client_val=client_val,
             local_epochs=local_epochs,
             lr=lr,
-            device=device
+            device=device,
+            client_id=client_id,
+            seed=seed,
         ).to_client()
 
     return client_fn
 
 
 class FlowerClient(fl.client.NumPyClient):
-    def __init__(self, net, train_loader, val_loader,
-                 test_loader, local_epochs, lr, device):
-        self.net          = net
-        self.train_loader = train_loader
-        self.val_loader   = val_loader
-        self.test_loader  = test_loader
+    """A simulated client that never receives or loads the global test set."""
+
+    def __init__(
+        self, net, client_train, client_val, local_epochs, lr, device,
+        client_id=0, seed=42,
+    ):
+        self.net = net
+        self.client_train = client_train
+        self.client_val = client_val
         self.local_epochs = local_epochs
-        self.lr           = lr
-        self.device       = device
+        self.lr = lr
+        self.device = device
+        self.client_id = client_id
+        self.seed = seed
+        self.class_counts = count_client_classes(
+            self.client_train.dataset, self.net.fc.out_features
+        )
 
     def get_parameters(self, config):
         return get_parameters(self.net)
 
     def fit(self, parameters, config):
-        """Nhan trong so tu Server -> train cuc bo -> gui ve."""
+        """Receive global weights, train locally, and return model weights."""
+        round_seed = self.seed + 1009 * int(config.get("server_round", 0)) + self.client_id
+        torch.manual_seed(round_seed)
+        np.random.seed(round_seed % (2 ** 32 - 1))
         set_parameters(self.net, parameters)
-
-        # Doc LR tu config Server (neu Server gui xuong GlobalLRScheduler)
-        # Neu khong co, dung LR mac dinh khi khoi tao
-        current_lr = config.get("lr", self.lr)
-    
+        current_lr = float(config.get("lr", self.lr))
+        logit_tau = float(config.get("logit_tau", 0.0))
+        prior_smoothing = float(config.get("prior_smoothing", 1.0))
+        head_mu = float(config.get("head_mu", 0.0))
+        proximal_mu = float(config.get("proximal_mu", 0.0))
+        coverage_kappa = float(config.get("coverage_kappa", 32.0))
+        global_head = snapshot_classifier_head(self.net) if head_mu > 0 else None
         optimizer = torch.optim.Adam(self.net.parameters(), lr=current_lr)
+        train_loader = self.client_train
+        if bool(config.get("balanced_sampling", False)):
+            train_loader = balanced_loader(
+                self.client_train, self.class_counts,
+                seed=self.seed + 1009 * int(config.get("server_round", 0)) + self.client_id,
+            )
         metrics = train(
             model=self.net,
-            train_loader=self.train_loader,
+            train_loader=train_loader,
             optimizer=optimizer,
             epochs=self.local_epochs,
             device=self.device,
-            val_loader=self.val_loader
+            val_loader=self.client_val,
+            class_counts=self.class_counts,
+            logit_tau=logit_tau,
+            prior_smoothing=prior_smoothing,
+            head_mu=head_mu,
+            coverage_kappa=coverage_kappa,
+            global_head=global_head,
+            proximal_mu=proximal_mu,
+            global_params=(
+                [parameter.detach().clone() for parameter in self.net.parameters()]
+                if proximal_mu > 0 else None
+            ),
         )
-        return get_parameters(self.net), len(self.train_loader.dataset), {}
+        result_metrics = {
+            "train_loss": float(metrics["final_loss"]),
+            "train_accuracy": float(metrics["final_accuracy"]),
+            "val_loss": float(metrics.get("final_val_loss", 0.0)),
+            "val_accuracy": float(metrics.get("final_val_accuracy", 0.0)),
+            "num_val_samples": int(len(self.client_val.dataset)),
+            "num_classes_present": int((self.class_counts > 0).sum().item()),
+            "logit_tau": logit_tau,
+            "head_mu": head_mu,
+        }
+        if head_mu > 0:
+            result_metrics["coverage_weight_mean"] = float(
+                coverage_weights(self.class_counts, coverage_kappa).mean().item()
+            )
+        return get_parameters(self.net), len(self.client_train.dataset), result_metrics
 
     def evaluate(self, parameters, config):
-        """Nhan trong so tu Server -> danh gia tren test set."""
+        """Evaluate global weights on this client's validation subset."""
         set_parameters(self.net, parameters)
-        loss, eval_metrics = evaluate(self.net, self.test_loader, self.device)
-        # Chi lay cac gia tri scalar (float) ma Flower co the aggregate duoc.
-        # Cac gia tri dang List (precision_class, confusion_matrix)
-        # Flower khong ho tro aggregate truc tiep -> bo qua o day,
-        # se xu ly rieng trong run_simulation.py neu can.
-        return loss, len(self.test_loader.dataset), {
-            "accuracy":  float(eval_metrics["accuracy"]),
-            "precision": float(eval_metrics["precision"]),
-            "recall":    float(eval_metrics["recall"]),
-            "f1_score":  float(eval_metrics["f1_score"]),
-        }   
+        loss, metrics = evaluate(self.net, self.client_val, self.device)
+        return loss, len(self.client_val.dataset), {
+            "accuracy": float(metrics["accuracy"]),
+            "precision": float(metrics["precision"]),
+            "recall": float(metrics["recall"]),
+            "f1_score": float(metrics["f1_score"]),
+        }

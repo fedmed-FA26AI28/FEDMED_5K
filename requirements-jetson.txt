@@ -1,0 +1,9 @@
+# Install PyTorch and torchvision using wheels compatible with the device's JetPack first.
+# Ray is not required for a physical Flower client.
+flwr
+medmnist
+numpy
+scikit-learn
+matplotlib
+psutil
+PyYAML

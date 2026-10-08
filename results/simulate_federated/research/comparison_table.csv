@@ -1,0 +1,2 @@
+strategy,num_clients,alpha,local_epochs,fl_rounds_target,fl_rounds_actual,best_accuracy,final_accuracy,val_f1_macro,val_worst_class_recall,convergence_round,total_time_s,avg_time_per_round_s,model_size_kb,comm_per_round_kb,total_comm_mb,peak_gpu_memory_mb,current_gpu_memory_mb
+fedavg,2,0.3,1,1,1,0.1368421052631579,0.1368421052631579,0.03009259259259259,0.0,1,14.0,14.01,79.3,317.19,0.31,0.0,0.0

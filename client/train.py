@@ -6,10 +6,32 @@ import torch.nn as nn
 import time
 import copy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from algorithms.coverage import coverage_head_penalty, logit_adjustment
 
-def train(model, train_loader, optimizer, epochs, device, val_loader=None, min_lr: float = 1e-6):
+def train(
+    model,
+    train_loader,
+    optimizer,
+    epochs,
+    device,
+    val_loader=None,
+    min_lr: float = 1e-6,
+    class_counts=None,
+    logit_tau: float = 0.0,
+    prior_smoothing: float = 1.0,
+    head_mu: float = 0.0,
+    coverage_kappa: float = 32.0,
+    global_head=None,
+    proximal_mu: float = 0.0,
+    global_params=None,
+):
 
     criterion = nn.CrossEntropyLoss()
+    adjustment = None
+    if class_counts is not None and logit_tau > 0:
+        adjustment = logit_adjustment(
+            class_counts, tau=logit_tau, smoothing=prior_smoothing
+        ).to(device)
     model.train()
 
     start_time = time.time()
@@ -52,7 +74,25 @@ def train(model, train_loader, optimizer, epochs, device, val_loader=None, min_l
 
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            adjusted_outputs = (
+                outputs + adjustment.unsqueeze(0)
+                if adjustment is not None
+                else outputs
+            )
+            loss = criterion(adjusted_outputs, labels)
+            if head_mu > 0:
+                loss = loss + coverage_head_penalty(
+                    model,
+                    global_head,
+                    class_counts,
+                    head_mu=head_mu,
+                    kappa=coverage_kappa,
+                )
+            if proximal_mu > 0:
+                loss = loss + 0.5 * proximal_mu * sum(
+                    (current - reference).pow(2).sum()
+                    for current, reference in zip(model.parameters(), global_params)
+                )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()

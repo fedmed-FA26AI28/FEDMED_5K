@@ -87,7 +87,66 @@ def load_hardware_config(client_id: int = None, device_type: str = None) -> Dict
 # Partition
 # ─────────────────────────────────────────────────────────────
 
-def dirichlet_partition(dataset, num_clients: int, alpha: float, seed: int = 42) -> List[List[int]]:
+def _dataset_labels(dataset) -> np.ndarray:
+    return np.asarray(
+        [int(np.asarray(dataset[index][1]).squeeze()) for index in range(len(dataset))],
+        dtype=np.int64,
+    )
+
+
+def stratified_subsample_indices(
+    dataset, num_samples: int = None, seed: int = 42
+) -> List[int]:
+    """Select a reproducible class-stratified training budget."""
+    if num_samples is None or num_samples >= len(dataset):
+        return list(range(len(dataset)))
+    if num_samples <= 0:
+        raise ValueError("num_samples must be greater than zero")
+    labels = _dataset_labels(dataset)
+    rng = np.random.default_rng(seed)
+    classes, counts = np.unique(labels, return_counts=True)
+    raw_targets = counts / counts.sum() * num_samples
+    targets = np.floor(raw_targets).astype(int)
+    for position in np.argsort(-(raw_targets - targets))[: num_samples - int(targets.sum())]:
+        targets[position] += 1
+    selected: List[int] = []
+    for class_id, target in zip(classes, targets):
+        class_indices = np.flatnonzero(labels == class_id)
+        rng.shuffle(class_indices)
+        selected.extend(class_indices[:target].tolist())
+    rng.shuffle(selected)
+    return selected
+
+
+def stratified_holdout_indices(
+    dataset, holdout_fraction: float, seed: int = 42
+) -> tuple[List[int], List[int]]:
+    """Split validation indices into local-monitor and calibration subsets."""
+    if not 0.0 < holdout_fraction < 1.0:
+        raise ValueError("holdout_fraction must be in (0, 1)")
+    labels = _dataset_labels(dataset)
+    rng = np.random.default_rng(seed)
+    monitor: List[int] = []
+    holdout: List[int] = []
+    for class_id in np.unique(labels):
+        class_indices = np.flatnonzero(labels == class_id)
+        rng.shuffle(class_indices)
+        holdout_size = max(1, int(round(len(class_indices) * holdout_fraction)))
+        holdout_size = min(holdout_size, len(class_indices) - 1)
+        holdout.extend(class_indices[:holdout_size].tolist())
+        monitor.extend(class_indices[holdout_size:].tolist())
+    rng.shuffle(monitor)
+    rng.shuffle(holdout)
+    return monitor, holdout
+
+
+def dirichlet_partition(
+    dataset,
+    num_clients: int,
+    alpha: float,
+    seed: int = 42,
+    eligible_indices: List[int] = None,
+) -> List[List[int]]:
     """
     Phan chia dataset theo phan phoi Dirichlet (non-IID).
 
@@ -100,20 +159,29 @@ def dirichlet_partition(dataset, num_clients: int, alpha: float, seed: int = 42)
     Returns:
         List gom num_clients danh sach, moi danh sach chua cac sample index.
     """
-    np.random.seed(seed)
-
-    labels = np.array([dataset[i][1] for i in range(len(dataset))]).squeeze()
+    if num_clients <= 0 or alpha <= 0:
+        raise ValueError("num_clients and alpha must be greater than zero")
+    rng = np.random.default_rng(seed)
+    labels = _dataset_labels(dataset)
+    eligible = np.asarray(
+        list(range(len(dataset))) if eligible_indices is None else eligible_indices,
+        dtype=np.int64,
+    )
+    if len(eligible) == 0 or len(np.unique(eligible)) != len(eligible):
+        raise ValueError("eligible_indices must be non-empty and unique")
+    if eligible.min() < 0 or eligible.max() >= len(dataset):
+        raise ValueError("eligible_indices contains an out-of-range index")
     num_classes = len(np.unique(labels))
 
     # danh sach cac client
     client_indices = [[] for _ in range(num_clients)]
 
     for class_id in range(num_classes):
-        class_indices = np.where(labels == class_id)[0]
-        np.random.shuffle(class_indices)
+        class_indices = eligible[labels[eligible] == class_id]
+        rng.shuffle(class_indices)
 
         # ty le phan phoi theo dirichlet
-        proportions = np.random.dirichlet(alpha * np.ones(num_clients))
+        proportions = rng.dirichlet(alpha * np.ones(num_clients))
 
         # tinh so luong sample base on alpha
         proportions = (proportions * len(class_indices)).astype(int)
@@ -129,6 +197,34 @@ def dirichlet_partition(dataset, num_clients: int, alpha: float, seed: int = 42)
             client_indices[cid].extend(class_indices[start:end].tolist())
             start = end
 
+    return client_indices
+
+
+def stratified_validation_partition(
+    dataset, num_clients: int, seed: int = 42, eligible_indices: List[int] = None
+) -> List[List[int]]:
+    """Create deterministic, disjoint validation subsets for virtual clients."""
+    if num_clients <= 0:
+        raise ValueError("num_clients must be greater than zero")
+
+    labels = _dataset_labels(dataset)
+    eligible = np.asarray(
+        list(range(len(dataset))) if eligible_indices is None else eligible_indices,
+        dtype=np.int64,
+    )
+    rng = np.random.default_rng(seed)
+    client_indices = [[] for _ in range(num_clients)]
+
+    for class_id in np.unique(labels):
+        class_indices = eligible[labels[eligible] == class_id]
+        rng.shuffle(class_indices)
+        for client_id, indices in enumerate(
+            np.array_split(class_indices, num_clients)
+        ):
+            client_indices[client_id].extend(indices.tolist())
+
+    for indices in client_indices:
+        rng.shuffle(indices)
     return client_indices
 
 
@@ -160,6 +256,7 @@ def save_partition(client_indices: List[List[int]], dataset,
 
     result = {
         "dataset": "bloodmnist",
+        "split": "train",
         "alpha": alpha,
         "seed": seed,
         "num_clients": num_clients,
