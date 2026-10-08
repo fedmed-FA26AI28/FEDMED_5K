@@ -27,3 +27,8 @@ experiments/*/checkpoints/
 .DS_Store
 Thumbs.db
 
+# Generated local/Kaggle research runs (keep source code separate from artifacts)
+results/pilot_*/
+results/kaggle_runs/
+results/simulate_federated/research/
+

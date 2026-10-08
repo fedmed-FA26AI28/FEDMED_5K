@@ -233,12 +233,17 @@ def run_one(
     final_test: bool = False,
     locked_config: str = None,
     early_stop_patience: int = 0,
+    ray_cpus: int = None,
+    ray_object_store_mb: int = None,
+    output_dir: str = None,
 ) -> dict:
 
     if not 0.0 < calibration_fraction < 1.0:
         raise ValueError("calibration_fraction must be in (0, 1)")
     if final_test and not locked_config:
         raise ValueError("final test requires --locked_config from a development run")
+    if ray_object_store_mb is not None and ray_object_store_mb < 80:
+        raise ValueError("ray_object_store_mb must be at least 80")
     if strategy_name in {"vacant_distill", "coverage_distill"}:
         if not math.isfinite(distill_mu) or distill_mu <= 0:
             raise ValueError("distill_mu must be finite and positive")
@@ -264,6 +269,8 @@ def run_one(
         resources["num_gpus"] = client_gpus
     if not torch.cuda.is_available():
         resources["num_gpus"] = 0.0
+    if ray_cpus is not None and ray_cpus < resources["num_cpus"]:
+        raise ValueError("ray_cpus must be at least client_cpus")
     client_device = torch.device(
         "cuda" if resources.get("num_gpus", 0.0) > 0 else "cpu"
     )
@@ -410,12 +417,18 @@ def run_one(
     try:
         print(f"  Virtual client resources: {resources}")
 
+        ray_init_args = {"ignore_reinit_error": True, "include_dashboard": False}
+        if ray_cpus is not None:
+            ray_init_args["num_cpus"] = ray_cpus
+        if ray_object_store_mb is not None:
+            ray_init_args["object_store_memory"] = ray_object_store_mb * 1024 * 1024
         fl.simulation.start_simulation(
             client_fn=client_fn,
             num_clients=num_clients,
             config=fl.server.ServerConfig(num_rounds=num_rounds),
             strategy=strategy,
             client_resources=resources,
+            ray_init_args=ray_init_args,
         )
     except Exception as e:
         # Flower sẽ bọc lỗi của chúng ta vào trong e.__cause__
@@ -461,6 +474,7 @@ def run_one(
         "normalization": normalization_mode, "normalization_stats": normalization,
         "seed": seed, "final_test_enabled": final_test,
         "client_resources": resources,
+        "ray_cpus": ray_cpus, "ray_object_store_mb": ray_object_store_mb,
         "local_epochs": local_epochs, "fl_rounds_target": num_rounds,
         "early_stop_patience": early_stop_patience,
         "fl_rounds_actual": actual_n,
@@ -511,7 +525,8 @@ def run_one(
     }
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    save_dir = RESULTS_DIR / strategy_name / f"clients{num_clients}_alpha{alpha}_seed{seed}_{timestamp}"
+    results_dir = Path(output_dir) if output_dir else RESULTS_DIR
+    save_dir = results_dir / strategy_name / f"clients{num_clients}_alpha{alpha}_seed{seed}_{timestamp}"
     save_dir.mkdir(parents=True, exist_ok=True)
     with open(save_dir / "results.json", "w", encoding="utf-8") as f:
         json.dump(result, f, indent=4)
@@ -532,6 +547,7 @@ def run_one(
             "distill_warmup_rounds": distill_warmup_rounds,
             "model": model_name, "augment": augment, "normalization": normalization_mode,
             "early_stop_patience": early_stop_patience,
+            "ray_cpus": ray_cpus, "ray_object_store_mb": ray_object_store_mb,
         }
         with open(save_dir / "run_spec.json", "w", encoding="utf-8") as f:
             json.dump(run_spec, f, indent=2)
@@ -543,7 +559,7 @@ def run_one(
     return result
 
 
-def generate_comparison_table(all_results: list):
+def generate_comparison_table(all_results: list, output_dir=None):
     """In bang so sanh va luu CSV day du sau khi chay xong tat ca thi nghiem."""
     if not all_results:
         return
@@ -587,7 +603,8 @@ def generate_comparison_table(all_results: list):
 
     # --- Luu CSV ---
     # Tat ca cac truong scalar tu result dict, bo qua accuracy_history (la list)
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    results_dir = Path(output_dir) if output_dir else RESULTS_DIR
+    results_dir.mkdir(parents=True, exist_ok=True)
     keys = [
         # Tham so thi nghiem
         "strategy",
@@ -614,7 +631,7 @@ def generate_comparison_table(all_results: list):
         "current_gpu_memory_mb",
     ]
 
-    csv_path = RESULTS_DIR / "comparison_table.csv"
+    csv_path = results_dir / "comparison_table.csv"
     with open(csv_path, "w", encoding="utf-8") as f:
         f.write(",".join(keys) + "\n")
         for r in all_results:
@@ -634,6 +651,12 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--client_cpus", type=float, default=None)
     parser.add_argument("--client_gpus", type=float, default=None)
+    parser.add_argument("--ray_cpus", type=int, default=None,
+                        help="Limit Ray actors; 1 with client_cpus=1 serializes virtual clients")
+    parser.add_argument("--ray_object_store_mb", type=int, default=None,
+                        help="Cap Ray object-store memory in MB; 256 is a low-memory starting point")
+    parser.add_argument("--output_dir", default=None,
+                        help="Keep run artifacts separate from the configured results directory")
     parser.add_argument("--train_samples", type=int, default=5000)
     parser.add_argument("--calibration_fraction", type=float, default=0.5)
     parser.add_argument("--conformal_alpha", type=float, default=0.1)
@@ -674,8 +697,9 @@ def main():
         print(f"CUDA    : {gpu_info['cuda_version']}")
     print(f"Config  : {_CFG_PATH}")
     # Luu gpu_info vao 1 file chung
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    with open(RESULTS_DIR / "gpu_info.json", "w") as f:
+    results_dir = Path(args.output_dir) if args.output_dir else RESULTS_DIR
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with open(results_dir / "gpu_info.json", "w") as f:
         json.dump(gpu_info, f, indent=4)
 
 
@@ -708,6 +732,9 @@ def main():
                         augment=args.augment, normalization_mode=args.normalization,
                         final_test=args.final_test, locked_config=args.locked_config,
                         early_stop_patience=args.early_stop_patience,
+                        ray_cpus=args.ray_cpus,
+                        ray_object_store_mb=args.ray_object_store_mb,
+                        output_dir=args.output_dir,
                     )
                     if r: all_results.append(r)
     else:
@@ -736,10 +763,13 @@ def main():
             augment=args.augment, normalization_mode=args.normalization,
             final_test=args.final_test, locked_config=args.locked_config,
             early_stop_patience=args.early_stop_patience,
+            ray_cpus=args.ray_cpus,
+            ray_object_store_mb=args.ray_object_store_mb,
+            output_dir=args.output_dir,
         )
         if r: all_results.append(r)
 
-    generate_comparison_table(all_results)
+    generate_comparison_table(all_results, output_dir=args.output_dir)
     print("\nHoan thanh!")
 
 if __name__ == "__main__":

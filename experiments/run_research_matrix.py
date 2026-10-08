@@ -39,8 +39,19 @@ def main():
     parser.add_argument("--rounds", type=int, default=30)
     parser.add_argument("--local_epochs", type=int, default=1)
     parser.add_argument("--client_gpus", type=float, default=0.0)
+    parser.add_argument("--client_cpus", type=float, default=None)
+    parser.add_argument("--ray_cpus", type=int, default=None)
+    parser.add_argument("--ray_object_store_mb", type=int, default=None)
+    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Run one seed at a time for resumable notebook sessions")
+    parser.add_argument("--alpha", type=float, default=None)
     args = parser.parse_args()
     for job in jobs(args.phase):
+        if args.seed is not None and job["seed"] != args.seed:
+            continue
+        if args.alpha is not None and job["alpha"] != args.alpha:
+            continue
         command = [sys.executable, "-m", "experiments.run_simulation",
                    "--num_clients", "10", "--train_samples", "5000",
                    "--rounds", str(args.rounds), "--local_epochs", str(args.local_epochs),
@@ -49,6 +60,14 @@ def main():
                    "--seed", str(job["seed"]), "--client_gpus", str(args.client_gpus)]
         if "coverage_kappa" in job:
             command.extend(("--coverage_kappa", str(job["coverage_kappa"])))
+        for flag, value in (
+            ("--client_cpus", args.client_cpus),
+            ("--ray_cpus", args.ray_cpus),
+            ("--ray_object_store_mb", args.ray_object_store_mb),
+            ("--output_dir", args.output_dir),
+        ):
+            if value is not None:
+                command.extend((flag, str(value)))
         if job["augment"]:
             command.append("--augment")
         print(" ".join(command), flush=True)
