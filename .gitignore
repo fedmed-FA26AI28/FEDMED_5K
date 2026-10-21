@@ -13,6 +13,10 @@ __pycache__/
 *.pt
 *.pth
 *.bin
+*.pkl
+
+# SCAFFOLD runtime states
+data/scaffold_states/
 
 # MedMNIST downloaded dataset files
 .medmnist/
@@ -26,4 +30,3 @@ experiments/*/checkpoints/
 # OS generated files
 .DS_Store
 Thumbs.db
-

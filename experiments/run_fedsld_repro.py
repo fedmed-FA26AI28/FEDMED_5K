@@ -1,6 +1,7 @@
 """
 Chạy FL simulation giống setup của FedSLD paper (ISBI 2022).
-Sử dụng SimpleCNN ~20K params thay vì model của paper (~570K).
+Hỗ trợ các model: 20K (SimpleCNN) và 570K (CNN570K chuẩn bài báo).
+Hỗ trợ các chiến lược: fedavg, fedprox, fedbn, fednova, scaffold, fednova_scaffold.
 
 Chạy:
     # Chạy tất cả (2 dataset x 2 partition x các strategy)
@@ -8,15 +9,10 @@ Chạy:
 
     # Chạy cụ thể
     python -m experiments.run_fedsld_repro \
-        --dataset pathmnist \
-        --partition practical_noniid \
-        --strategy fedavg
-
-    # Chạy nhanh để verify (khuyến nghị bắt đầu từ đây)
-    python -m experiments.run_fedsld_repro \
         --dataset organmnist_axial \
         --partition practical_noniid \
-        --strategy fedavg
+        --strategy fednova \
+        --model 570k
 """
 
 import argparse
@@ -24,6 +20,7 @@ import csv
 import json
 import time
 from pathlib import Path
+import numpy as np
 import yaml
 import torch
 import flwr as fl
@@ -33,6 +30,9 @@ from datasets.partition import load_partition
 from models.cnn import SimpleCNN, get_parameters
 from models.cnn_570k import CNN570K
 from client.client import make_client_fn, make_fedbn_client_fn
+from client.client_fednova import make_fednova_client_fn
+from client.client_scaffold import make_scaffold_client_fn
+from client.client_fednova_scaffold import make_fednova_scaffold_client_fn
 from server.server import get_strategy, EarlyStoppingCallback
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -54,15 +54,19 @@ class EarlyStopException(Exception):
     pass
 
 
-def run_one(dataset_name, partition_method, strategy_name, device, model_type="20k", run_id=1):
+def run_one(dataset_name, partition_method, strategy_name, device, model_type="20k", run_id=1, custom_num_rounds=None, custom_proximal_mu=None):
     get_fn, num_classes = DATASET_FNS[dataset_name]
-    num_rounds = FS["partition_settings"][partition_method]["fl_rounds"]
+    num_rounds = custom_num_rounds if custom_num_rounds is not None else FS["partition_settings"][partition_method]["fl_rounds"]
+    proximal_mu_val = custom_proximal_mu if custom_proximal_mu is not None else float(FS.get("proximal_mu", 0.1))
 
     model_label = "~570K params (FedSLD Paper)" if model_type == "570k" else "~20K params (Ours)"
     print(f"\n{'='*65}")
     print(f"  DATASET  : {dataset_name.upper()}")
     print(f"  PARTITION: {partition_method}")
-    print(f"  STRATEGY : {strategy_name.upper()}")
+    if strategy_name == "fedprox":
+        print(f"  STRATEGY : {strategy_name.upper()} (proximal_mu={proximal_mu_val})")
+    else:
+        print(f"  STRATEGY : {strategy_name.upper()}")
     print(f"  MODEL    : {model_type.upper()} ({model_label})")
     print(f"  RUN      : {run_id}/3 (Seed 42)")
     print(f"  CLIENTS  : {FS['num_clients']} | BATCH SIZE: {FS['batch_size']}")
@@ -90,10 +94,20 @@ def run_one(dataset_name, partition_method, strategy_name, device, model_type="2
 
     # Strategy
     strategy = get_strategy(strategy_name, FS["num_clients"], init_params,
-                            proximal_mu=float(FS.get("proximal_mu", 0.01)))
+                            proximal_mu=proximal_mu_val)
 
-    # Client factory (chọn make_fedbn_client_fn nếu strategy là fedbn)
-    client_fn_maker = make_fedbn_client_fn if strategy_name == "fedbn" else make_client_fn
+    # Client factory routing
+    if strategy_name == "fedbn":
+        client_fn_maker = make_fedbn_client_fn
+    elif strategy_name == "fednova":
+        client_fn_maker = make_fednova_client_fn
+    elif strategy_name == "scaffold":
+        client_fn_maker = make_scaffold_client_fn
+    elif strategy_name == "fednova_scaffold":
+        client_fn_maker = make_fednova_scaffold_client_fn
+    else:
+        client_fn_maker = make_client_fn
+
     client_fn = client_fn_maker(
         train_dataset=train_ds,
         val_dataset=val_ds,
@@ -161,7 +175,7 @@ def run_one(dataset_name, partition_method, strategy_name, device, model_type="2
     def fit_config_fn(server_round: int):
         cfg = {"lr": FS["learning_rate"]}
         if strategy_name == "fedprox":
-            cfg["proximal_mu"] = float(FS.get("proximal_mu", 0.01))
+            cfg["proximal_mu"] = proximal_mu_val
         return cfg
 
     strategy.on_fit_config_fn = fit_config_fn
@@ -169,7 +183,7 @@ def run_one(dataset_name, partition_method, strategy_name, device, model_type="2
     t0 = time.time()
     try:
         # Tối ưu hóa tài nguyên cho từng dataset:
-        # - OrganMNIST (nhẹ: 34k ảnh 1 kênh): num_gpus=0 để Ray chạy song song đa tiến trình (~30s/round).
+        # - OrganMNIST (nhẹ: 34k ảnh 1 kênh): num_gpus=0 để Ray chạy song song đa tiến trình (~20-25s/round).
         # - PathMNIST (90k ảnh 3 kênh): num_gpus=0.5 (chạy 2 client song song trên GPU 8GB, 86s/round, ổn định 100%).
         if dataset_name == "organmnist_axial":
             client_res = {"num_cpus": 2, "num_gpus": 0}
@@ -213,6 +227,7 @@ def run_one(dataset_name, partition_method, strategy_name, device, model_type="2
         "optimizer":         FS["optimizer"],
         "learning_rate":     FS["learning_rate"],
         "batch_size":        FS["batch_size"],
+        "proximal_mu":       proximal_mu_val if strategy_name == "fedprox" else None,
         # Metrics chính (theo paper)
         "BTA":               round(max(history_bta),   4) if history_bta   else 0.0,
         "BMCTA":             round(max(history_bmcta), 4) if history_bmcta else 0.0,
@@ -243,15 +258,19 @@ def get_csv_key(row):
     st = str(row.get("strategy", "")).strip()
     md_str = str(row.get("model", "")).lower()
     md = "570k" if "570k" in md_str else "20k"
+    run_val = str(row.get("run", "1")).strip()
     try:
-        run_id = int(row.get("run", 1))
+        run_id = int(run_val)
     except (ValueError, TypeError):
-        run_id = 1
+        run_id = run_val
     return (ds, pt, st, md, run_id)
 
 
 def update_comparison_csv(new_results):
-    """Cập nhật kết quả vào comparison_table_fedsld.csv ngay sau mỗi scenario (lưu 3 runs cho 570k practical)."""
+    """Cập nhật kết quả vào comparison_table_fedsld.csv ngay sau mỗi scenario.
+    Mỗi phương pháp gồm 3 lần chạy, thêm dòng tính trung bình ± độ lệch chuẩn (Mean ± Std),
+    và có dòng trống cách dòng giữa các phương pháp.
+    """
     if not new_results:
         return
     if not isinstance(new_results, list):
@@ -277,37 +296,101 @@ def update_comparison_csv(new_results):
         k = get_csv_key(nr)
         row_map[k] = {col: str(nr.get(col, "-")) for col in keys}
 
-    # 12 cấu hình: 2 dataset x 2 strategy x 3 runs (đều practical 570k)
-    target_configs = []
-    for ds in ["organmnist_axial", "pathmnist"]:
-        for st in ["fedavg", "fedprox"]:
-            for r in [1, 2, 3]:
-                target_configs.append((ds, "practical_noniid", st, "570k", r))
-
+    target_strategies = ["fedavg", "fedprox", "fednova", "scaffold", "fednova_scaffold"]
     final_rows = []
-    for (ds, pt, st, md, r) in target_configs:
-        k = (ds, pt, st, md, r)
-        if k in row_map:
-            final_rows.append(row_map[k])
-        else:
-            num_params = 570107 if ds == "organmnist_axial" else 570705
-            model_size = 2.175 if ds == "organmnist_axial" else 2.177
-            final_rows.append({
+    first_group = True
+
+    for ds in ["organmnist_axial", "pathmnist"]:
+        num_params = 570107 if ds == "organmnist_axial" else 570705
+        model_size = 2.175 if ds == "organmnist_axial" else 2.177
+
+        for st in target_strategies:
+            # Dòng trống cách dòng giữa các phương pháp
+            if not first_group:
+                final_rows.append({col: "" for col in keys})
+            first_group = False
+
+            bta_vals = []
+            time_vals = []
+            comm_val = "-"
+            rounds_val = "-"
+
+            # Ghi nhận 3 runs
+            for r in [1, 2, 3]:
+                k = (ds, "practical_noniid", st, "570k", r)
+                if k in row_map:
+                    row_data = row_map[k]
+                    final_rows.append(row_data)
+                    bta_str = row_data.get("BTA", "-")
+                    if bta_str not in ["-", "", None]:
+                        try:
+                            bta_vals.append(float(bta_str))
+                        except ValueError:
+                            pass
+                    time_str = row_data.get("total_time_min", "-")
+                    if time_str not in ["-", "", None]:
+                        try:
+                            time_vals.append(float(time_str))
+                        except ValueError:
+                            pass
+                    if row_data.get("total_comm_mb", "-") != "-":
+                        comm_val = row_data["total_comm_mb"]
+                    if row_data.get("fl_rounds_actual", "-") != "-":
+                        rounds_val = row_data["fl_rounds_actual"]
+                else:
+                    final_rows.append({
+                        "dataset": ds,
+                        "partition_method": "practical_noniid",
+                        "strategy": st,
+                        "model": "570k (~570k)",
+                        "run": str(r),
+                        "num_params": num_params,
+                        "model_size_mb": model_size,
+                        "total_comm_mb": "-",
+                        "total_time_min": "-",
+                        "total_time_s": "-",
+                        "BTA": "-",
+                        "fl_rounds_actual": "-",
+                        "optimizer": "sgd",
+                        "learning_rate": "0.01",
+                    })
+
+            # Tính dòng Mean ± Std
+            if len(bta_vals) == 3:
+                mean_bta = float(np.mean(bta_vals))
+                std_bta = float(np.std(bta_vals, ddof=1))
+                summary_bta = f"{mean_bta:.4f} ± {std_bta:.4f}"
+            elif len(bta_vals) > 0:
+                mean_bta = float(np.mean(bta_vals))
+                summary_bta = f"{mean_bta:.4f} ({len(bta_vals)}/3 runs)"
+            else:
+                summary_bta = "-"
+
+            if time_vals:
+                avg_time_min = float(np.mean(time_vals))
+                avg_time_min_str = f"{avg_time_min:.1f}"
+                avg_time_s_str = f"{avg_time_min * 60:.1f}"
+            else:
+                avg_time_min_str = "-"
+                avg_time_s_str = "-"
+
+            summary_row = {
                 "dataset": ds,
-                "partition_method": pt,
+                "partition_method": "practical_noniid",
                 "strategy": st,
                 "model": "570k (~570k)",
-                "run": str(r),
+                "run": "Mean ± Std",
                 "num_params": num_params,
                 "model_size_mb": model_size,
-                "total_comm_mb": "-",
-                "total_time_min": "-",
-                "total_time_s": "-",
-                "BTA": "-",
-                "fl_rounds_actual": "-",
+                "total_comm_mb": comm_val,
+                "total_time_min": avg_time_min_str,
+                "total_time_s": avg_time_s_str,
+                "BTA": summary_bta,
+                "fl_rounds_actual": rounds_val,
                 "optimizer": "sgd",
                 "learning_rate": "0.01",
-            })
+            }
+            final_rows.append(summary_row)
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
@@ -317,7 +400,10 @@ def update_comparison_csv(new_results):
 
 
 def main():
-    valid_strategies = list(set(FS.get("fl_strategies", ["fedavg", "fedprox"]) + ["fedbn"]))
+    valid_strategies = list(set(
+        FS.get("fl_strategies", ["fedavg", "fedprox"]) +
+        ["fedbn", "fednova", "scaffold", "fednova_scaffold"]
+    ))
 
     parser = argparse.ArgumentParser(description="FedSLD Reproduction Simulation")
     parser.add_argument("--dataset",        choices=list(DATASET_FNS.keys()), default="organmnist_axial")
@@ -327,6 +413,8 @@ def main():
     parser.add_argument("--run_id",         type=int, default=1, choices=[1, 2, 3], help="Run iteration (1, 2, or 3, default: 1)")
     parser.add_argument("--runs",           nargs="+", type=int, default=None, help="List of run IDs to execute, e.g. --runs 2 3")
     parser.add_argument("--all_runs",       action="store_true", help="Run all 3 runs (run 1, 2, 3) sequentially")
+    parser.add_argument("--num_rounds",     type=int, default=None, help="Override number of FL rounds (useful for smoke tests)")
+    parser.add_argument("--proximal_mu",    type=float, default=None, help="Proximal mu for FedProx (default from config: 0.1)")
     parser.add_argument("--all",            action="store_true", help="Run all experiment scenarios")
     parser.add_argument("--practical_570k", action="store_true", help="Run all 4 practical non-IID scenarios for 570K model (OrganMNIST + PathMNIST x FedAvg + FedProx)")
     parser.add_argument("--all_570k",       action="store_true", help="Run all 8 scenarios for 570K model (Practical 80 rds + Pathological 160 rds)")
@@ -370,7 +458,7 @@ def main():
         for idx, (ds, pt, st, md) in enumerate(scenarios, 1):
             for r in runs_to_exec:
                 print(f"\n>>> [SCENARIO {idx}/8 | RUN {r}/3] STARTING: {ds.upper()} | {pt} | {st.upper()} | {md.upper()} ...", flush=True)
-                run_one(ds, pt, st, device, model_type=md, run_id=r)
+                run_one(ds, pt, st, device, model_type=md, run_id=r, custom_num_rounds=args.num_rounds, custom_proximal_mu=args.proximal_mu)
                 print(f">>> [SCENARIO {idx}/8 | RUN {r}/3] FINISHED: {ds.upper()} | {pt} | {st.upper()} | {md.upper()}\n", flush=True)
 
     elif args.practical_570k:
@@ -390,7 +478,7 @@ def main():
         for idx, (ds, pt, st, md) in enumerate(scenarios, 1):
             for r in runs_to_exec:
                 print(f"\n>>> [SCENARIO {idx}/4 | RUN {r}/3] STARTING: {ds.upper()} | {pt} | {st.upper()} | {md.upper()} ...", flush=True)
-                run_one(ds, pt, st, device, model_type=md, run_id=r)
+                run_one(ds, pt, st, device, model_type=md, run_id=r, custom_num_rounds=args.num_rounds, custom_proximal_mu=args.proximal_mu)
                 print(f">>> [SCENARIO {idx}/4 | RUN {r}/3] FINISHED: {ds.upper()} | {pt} | {st.upper()} | {md.upper()}\n", flush=True)
 
     elif args.all:
@@ -398,10 +486,10 @@ def main():
             for pt in ["practical_noniid", "pathological_noniid"]:
                 for st in FS.get("fl_strategies", ["fedavg", "fedprox"]):
                     for r in runs_to_exec:
-                        run_one(ds, pt, st, device, model_type=args.model, run_id=r)
+                        run_one(ds, pt, st, device, model_type=args.model, run_id=r, custom_num_rounds=args.num_rounds, custom_proximal_mu=args.proximal_mu)
     else:
         for r in runs_to_exec:
-            run_one(args.dataset, args.partition, args.strategy, device, model_type=args.model, run_id=r)
+            run_one(args.dataset, args.partition, args.strategy, device, model_type=args.model, run_id=r, custom_num_rounds=args.num_rounds, custom_proximal_mu=args.proximal_mu)
 
 
 if __name__ == "__main__":

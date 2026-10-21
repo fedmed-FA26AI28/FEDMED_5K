@@ -1,26 +1,32 @@
 """Điểm vào (entry point) của FL Server. Khởi chạy server, chọn chiến lược (strategy) và điều phối các round FL."""
-"""FL Server - Ho tro 11 strategies co san trong Flower."""
+"""FL Server - Hỗ trợ các chiến lược chuẩn của Flower và các thuật toán nâng cao (FedNova, SCAFFOLD)."""
 
 import flwr as fl
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 from flwr.common import Metrics
 from flwr.server.strategy import (
     FedAvg, FedAvgM, FedProx,
     FedMedian, FedTrimmedAvg,
-    
 )
+from algorithms.fednova_strategy import FedNova
+from algorithms.scaffold_strategy import SCAFFOLD
 
-# Danh sach day du de dung trong run_simulation.py
+# Danh sách đầy đủ chiến lược hỗ trợ
 ALL_STRATEGIES = [
-    "fedavg",       
-    "fedprox",      
+    "fedavg",
+    "fedprox",
     "fedbn",
+    "fednova",
+    "scaffold",
+    "fednova_scaffold",
 ]
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
     """Tự động tính trung bình có trọng số cho các metrics (accuracy, precision...) từ client."""
     total_examples = sum([num_examples for num_examples, _ in metrics])
-    
+    if total_examples == 0:
+        return {}
+
     weighted_metrics = {}
     for num_examples, m in metrics:
         for key, value in m.items():
@@ -33,7 +39,7 @@ def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
 def get_strategy(strategy_name: str, num_clients: int,
                  initial_parameters,
                  proximal_mu: float = 0.01):
-    """Tra ve Flower Strategy theo ten."""
+    """Trả về Flower Strategy theo tên."""
 
     fraction_fit     = 1.0
     fraction_eval    = 1.0
@@ -59,19 +65,29 @@ def get_strategy(strategy_name: str, num_clients: int,
 
     elif name == "fedprox":
         return FedProx(**base, proximal_mu=proximal_mu)
-    
+
     elif name == "fedbn":
         return FedAvg(**base)
-    
+
+    elif name == "fednova":
+        return FedNova(**base)
+
+    elif name == "scaffold":
+        return SCAFFOLD(num_clients=num_clients, **base)
+
+    elif name == "fednova_scaffold":
+        from algorithms.fednova_scaffold_strategy import FedNovaScaffold
+        return FedNovaScaffold(num_clients=num_clients, **base)
+
     else:
         raise ValueError(
-            f"Strategy '{strategy_name}' khong hop le.\n"
-            f"Chon trong: {ALL_STRATEGIES}"
+            f"Strategy '{strategy_name}' không hợp lệ.\n"
+            f"Chọn trong: {ALL_STRATEGIES}"
         )
 
 
 class EarlyStoppingCallback:
-    """Global Early Stopping dua tren Global Accuracy."""
+    """Global Early Stopping dựa trên Global Accuracy."""
     def __init__(self, patience: int = 5, min_delta: float = 0.001):
         self.patience   = patience
         self.min_delta  = min_delta
@@ -88,20 +104,16 @@ class EarlyStoppingCallback:
         else:
             self.wait += 1
             if self.wait >= self.patience:
-                print(f"\n[Global Early Stop] Dung tai Round {current_round}.")
-                print(f"  Best Acc: {self.best_acc:.4f} tai Round {self.best_round}")
+                print(f"\n[Global Early Stop] Dừng tại Round {current_round}.")
+                print(f"  Best Acc: {self.best_acc:.4f} tại Round {self.best_round}")
                 self.stop = True
         return not self.stop
 
 
 class GlobalLRScheduler:
     """
-    Giam Learning Rate toan cuc khi Global Accuracy khong tang.
-    Server gui LR moi xuong Client thong qua config dict trong moi Round.
-    
-    Su dung:
-        - Server truyen LR vao fit() config: {"lr": current_lr}
-        - Client doc config["lr"] de override LR cuc bo
+    Giảm Learning Rate toàn cục khi Global Accuracy không tăng.
+    Server gửi LR mới xuống Client thông qua config dict trong mỗi Round.
     """
     def __init__(self, initial_lr: float = 0.001,
                  factor: float = 0.5,
@@ -116,10 +128,6 @@ class GlobalLRScheduler:
         self.wait     = 0
 
     def step(self, accuracy: float) -> float:
-        """
-        Kiem tra va giam LR neu can.
-        Tra ve LR hien tai (co the da giam).
-        """
         if accuracy > self.best_acc + 1e-4:
             self.best_acc = accuracy
             self.wait     = 0
@@ -128,12 +136,11 @@ class GlobalLRScheduler:
             if self.wait >= self.patience:
                 new_lr = max(self.lr * self.factor, self.min_lr)
                 if new_lr < self.lr:
-                    print(f"  [Global LR] Giam LR: {self.lr:.6f} -> {new_lr:.6f}")
+                    print(f"  [Global LR] Giảm LR: {self.lr:.6f} -> {new_lr:.6f}")
                     self.lr = new_lr
                 self.wait = 0
 
         return self.lr
 
     def get_config(self) -> dict:
-        """Tra ve config dict de Server gui xuong Client."""
         return {"lr": self.lr}

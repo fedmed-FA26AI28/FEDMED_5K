@@ -80,6 +80,9 @@ fl_strategies:
   - fedavg
   - fedprox
   - fedbn
+  - fednova
+  - scaffold
+  - fednova_scaffold
 # Global Early Stopping (theo doi Round, khong phai Epoch)
 early_stopping:
   patience: 5       # So round khong tang Accuracy thi dung
@@ -94,10 +97,10 @@ client_resources:
   num_cpus: 2
   num_gpus: 0     # Dat 0.5 neu muon chia GPU cho cac client ao
 
-  # ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # FedSLD Reproduction Setup
 # Dùng với: python -m experiments.run_fedsld_repro
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 fedsld_setup:
   datasets:
     - pathmnist
@@ -109,7 +112,7 @@ fedsld_setup:
   learning_rate: 0.01
   momentum: 0.9
   weight_decay: 0.0001
-  proximal_mu: 0.1
+  proximal_mu: 0.01
   partition_settings:
     practical_noniid:
       fl_rounds: 80
@@ -118,6 +121,9 @@ fedsld_setup:
   fl_strategies:
     - fedavg
     - fedprox
+    - fednova
+    - scaffold
+    - fednova_scaffold
   early_stopping:
     enabled: false
     patience: 10
