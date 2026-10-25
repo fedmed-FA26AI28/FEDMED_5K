@@ -30,3 +30,11 @@ experiments/*/checkpoints/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Temporary directories and caches
+temp_FedMed_20K/
+results/.matplotlib/
+test_math.docx
+test_omml.docx
+data/fedbn_states/
+data/medmnist/

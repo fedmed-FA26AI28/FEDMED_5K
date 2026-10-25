@@ -26,10 +26,11 @@ def make_client_fn(train_dataset, val_dataset, test_dataset,
                    partition, local_epochs, lr, device,
                    num_classes=8, batch_size=32,
                    optimizer_type="adam", momentum=0.0, weight_decay=0.0,
-                   model_type="20k"):
+                   model_type="20k", use_la=False, tau_la=1.0):
     """
     Factory function: trả về hàm client_fn dùng cho Flower Simulation.
     """
+    import numpy as np
     from torch.utils.data import DataLoader, Subset
 
     def client_fn(context: Context) -> fl.client.Client:
@@ -42,6 +43,14 @@ def make_client_fn(train_dataset, val_dataset, test_dataset,
                                   shuffle=False, num_workers=0)
         test_loader  = DataLoader(test_dataset, batch_size=batch_size,
                                   shuffle=False, num_workers=0)
+
+        log_priors = None
+        if use_la and hasattr(train_dataset, 'labels'):
+            client_labels = train_dataset.labels[partition[client_id]].reshape(-1)
+            counts = np.bincount(client_labels, minlength=num_classes).astype(np.float32)
+            counts = counts + 1e-4
+            priors = counts / counts.sum()
+            log_priors = torch.tensor(np.log(priors), dtype=torch.float32)
 
         in_channels = train_dataset[0][0].shape[0]
         if model_type == "570k":
@@ -60,6 +69,8 @@ def make_client_fn(train_dataset, val_dataset, test_dataset,
             optimizer_type=optimizer_type,
             momentum=momentum,
             weight_decay=weight_decay,
+            log_priors=log_priors,
+            tau_la=tau_la,
         ).to_client()
 
     return client_fn
@@ -68,7 +79,8 @@ def make_client_fn(train_dataset, val_dataset, test_dataset,
 class FlowerClient(fl.client.NumPyClient):
     def __init__(self, net, train_loader, val_loader,
                  test_loader, local_epochs, lr, device,
-                 optimizer_type="adam", momentum=0.0, weight_decay=0.0):
+                 optimizer_type="adam", momentum=0.0, weight_decay=0.0,
+                 log_priors=None, tau_la=1.0):
         self.net            = net
         self.train_loader   = train_loader
         self.val_loader     = val_loader
@@ -79,6 +91,8 @@ class FlowerClient(fl.client.NumPyClient):
         self.optimizer_type = optimizer_type
         self.momentum       = momentum
         self.weight_decay   = weight_decay
+        self.log_priors     = log_priors
+        self.tau_la         = tau_la
 
     def get_parameters(self, config):
         return get_parameters(self.net)
@@ -89,6 +103,7 @@ class FlowerClient(fl.client.NumPyClient):
 
         current_lr  = config.get("lr", self.lr)
         proximal_mu = float(config.get("proximal_mu", 0.0))
+        tau_la      = float(config.get("tau_la", self.tau_la))
 
         # Lưu bản sao trọng số global đầu round cho FedProx
         global_params = None
@@ -106,8 +121,14 @@ class FlowerClient(fl.client.NumPyClient):
             val_loader=None,
             proximal_mu=proximal_mu,
             global_params=global_params,
+            log_priors=self.log_priors,
+            tau_la=tau_la,
         )
-        return get_parameters(self.net), len(self.train_loader.dataset), {}
+        fit_metrics = {
+            "train_loss": float(metrics.get("final_loss", 0.0)),
+            "train_accuracy": float(metrics.get("final_accuracy", 0.0)),
+        }
+        return get_parameters(self.net), len(self.train_loader.dataset), fit_metrics
 
     def evaluate(self, parameters, config):
         """Nhận trọng số từ Server -> đánh giá trên test set."""
@@ -155,7 +176,7 @@ class FedBNFlowerClient(fl.client.NumPyClient):
 
         optimizer = _make_optimizer(self.net, self.optimizer_type,
                                     current_lr, self.momentum, self.weight_decay)
-        train(
+        metrics = train(
             model=self.net,
             train_loader=self.train_loader,
             optimizer=optimizer,
@@ -165,7 +186,11 @@ class FedBNFlowerClient(fl.client.NumPyClient):
             proximal_mu=proximal_mu,
             global_params=global_params,
         )
-        return get_parameters_fedbn(self.net), len(self.train_loader.dataset), {}
+        fit_metrics = {
+            "train_loss": float(metrics.get("final_loss", 0.0)),
+            "train_accuracy": float(metrics.get("final_accuracy", 0.0)),
+        }
+        return get_parameters_fedbn(self.net), len(self.train_loader.dataset), fit_metrics
 
     def evaluate(self, parameters, config):
         set_parameters_fedbn(self.net, parameters)

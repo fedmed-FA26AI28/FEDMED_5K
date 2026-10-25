@@ -83,7 +83,9 @@ class SCAFFOLD(FedAvg):
                     try:
                         with open(delta_file, "rb") as f:
                             delta_c = pickle.load(f)
-                            delta_c_list.append(delta_c)
+                            # Kiểm tra NaN / Inf để tránh làm ô nhiễm c_global
+                            if not any(torch.isnan(t).any() or torch.isinf(t).any() for t in delta_c):
+                                delta_c_list.append(delta_c)
                     except Exception as e:
                         print(f"   [SCAFFOLD Server] Cảnh báo không đọc được {delta_file}: {e}")
 
@@ -99,6 +101,12 @@ class SCAFFOLD(FedAvg):
             for delta_c in delta_c_list:
                 for j, dt in enumerate(delta_c):
                     self.c_global[j].add_(dt * scale)
+
+            # Norm clipping: Giới hạn chuẩn norm của c_global <= 5.0 để ngăn runaway drift
+            for j in range(len(self.c_global)):
+                c_norm = torch.norm(self.c_global[j]).item()
+                if c_norm > 5.0:
+                    self.c_global[j].mul_(5.0 / c_norm)
 
             # Lưu lại c_global mới
             self._save_c_global()

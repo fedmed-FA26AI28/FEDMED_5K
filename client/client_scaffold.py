@@ -115,6 +115,8 @@ class ScaffoldFlowerClient(fl.client.NumPyClient):
 
         fit_metrics = {
             "client_id": self.client_id,
+            "train_loss": float(result.get("final_loss", 0.0)),
+            "train_accuracy": float(result.get("final_accuracy", 0.0)),
             "tau": float(result["tau"]),
             "num_samples": float(result["num_samples"]),
         }

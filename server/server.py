@@ -14,11 +14,15 @@ from algorithms.scaffold_strategy import SCAFFOLD
 # Danh sách đầy đủ chiến lược hỗ trợ
 ALL_STRATEGIES = [
     "fedavg",
+    "fedavg_la",
     "fedprox",
+    "fedprox_la",
     "fedbn",
     "fednova",
     "scaffold",
+    "scaffold_la",
     "fednova_scaffold",
+    "fedbn_scaffold_la",
 ]
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
@@ -60,10 +64,10 @@ def get_strategy(strategy_name: str, num_clients: int,
 
     name = strategy_name.lower()
 
-    if name == "fedavg":
+    if name in ["fedavg", "fedavg_la"]:
         return FedAvg(**base)
 
-    elif name == "fedprox":
+    elif name in ["fedprox", "fedprox_la"]:
         return FedProx(**base, proximal_mu=proximal_mu)
 
     elif name == "fedbn":
@@ -72,7 +76,7 @@ def get_strategy(strategy_name: str, num_clients: int,
     elif name == "fednova":
         return FedNova(**base)
 
-    elif name == "scaffold":
+    elif name in ["scaffold", "scaffold_la", "fedbn_scaffold_la"]:
         return SCAFFOLD(num_clients=num_clients, **base)
 
     elif name == "fednova_scaffold":

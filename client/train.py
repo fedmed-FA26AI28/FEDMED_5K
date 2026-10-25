@@ -8,7 +8,8 @@ import copy
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def train(model, train_loader, optimizer, epochs, device, val_loader=None, min_lr: float = 1e-6,
-          proximal_mu: float = 0.1, global_params: list = None):
+          proximal_mu: float = 0.1, global_params: list = None,
+          log_priors: torch.Tensor = None, tau_la: float = 1.0):
 
     criterion = nn.CrossEntropyLoss()
     model.train()
@@ -50,7 +51,11 @@ def train(model, train_loader, optimizer, epochs, device, val_loader=None, min_l
 
             optimizer.zero_grad()
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            if log_priors is not None:
+                adjusted_outputs = outputs + tau_la * log_priors.to(device)
+                loss = criterion(adjusted_outputs, labels)
+            else:
+                loss = criterion(outputs, labels)
 
             # Proximal regularization term cho FedProx: (mu / 2) * ||w - w_t||^2
             if proximal_mu > 0.0 and global_params is not None:

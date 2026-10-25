@@ -43,14 +43,15 @@ def train_scaffold(model, train_loader, optimizer, epochs, device,
             outputs = model(images)
             loss = criterion(outputs, labels)
             loss.backward()
+            optimizer.step()
 
-            # SCAFFOLD gradient correction: grad = grad - c_i + c = grad + (c - c_i)
+            # Chuẩn NVIDIA NVFlare / NIID-Bench:
+            # Hiệu chỉnh control variate trực tiếp lên tham số mô hình SAU KHI optimizer.step().
+            # Điều này giúp momentum buffer (0.9) KHÔNG bị nhiễm bẩn bởi control variate,
+            # triệt tiêu hoàn toàn hiện tượng khuếch đại cấp số nhân dẫn đến NaN!
             with torch.no_grad():
                 for p, cg, cl in zip(model.parameters(), c_g_dev, c_l_dev):
-                    if p.grad is not None:
-                        p.grad.data.add_(cg - cl)
-
-            optimizer.step()
+                    p.data.add_(cg - cl, alpha=-lr)
             tau += 1
 
             running_loss += loss.item() * images.size(0)

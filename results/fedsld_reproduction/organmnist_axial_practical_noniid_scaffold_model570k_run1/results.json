@@ -1,0 +1,43 @@
+{
+  "dataset": "organmnist_axial",
+  "partition_method": "practical_noniid",
+  "strategy": "scaffold",
+  "model": "570k (~570k)",
+  "run": 1,
+  "num_params": 570107,
+  "model_size_mb": 2.175,
+  "total_comm_mb": 261.0,
+  "total_time_min": 2.5,
+  "total_time_s": 151.4,
+  "num_clients": 12,
+  "fl_rounds_target": 5,
+  "fl_rounds_actual": 5,
+  "optimizer": "sgd",
+  "learning_rate": 0.01,
+  "batch_size": 256,
+  "proximal_mu": null,
+  "tau_la": null,
+  "BTA": 0.6896,
+  "BMCTA": 0.6896,
+  "bta_per_round": [
+    0.2853,
+    0.4462,
+    0.5852,
+    0.6235,
+    0.6896
+  ],
+  "bmcta_per_round": [
+    0.2853,
+    0.4462,
+    0.5852,
+    0.6235,
+    0.6896
+  ],
+  "round_times_s": [
+    53.4,
+    25.8,
+    24.6,
+    23.4,
+    24.1
+  ]
+}

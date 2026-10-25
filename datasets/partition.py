@@ -104,6 +104,24 @@ def load_partition(json_path: str) -> List[List[int]]:
     return client_indices
 
 
+def load_partition_with_test(json_path: str):
+    """
+    Load cả train_indices và test_indices cho từng client theo partition FedSLD.
+    Returns: (train_partition, test_partition)
+    """
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    num_clients = data["num_clients"]
+    train_indices = []
+    test_indices = []
+    for i in range(num_clients):
+        cdata = data["clients"][str(i)]
+        train_indices.append(cdata.get("train_indices", cdata.get("indices", [])))
+        test_indices.append(cdata.get("test_indices", []))
+    return train_indices, test_indices
+
+
 # ─────────────────────────────────────────────────────────────
 # 2. FedSLD Partitions (Practical & Pathological)
 # ─────────────────────────────────────────────────────────────

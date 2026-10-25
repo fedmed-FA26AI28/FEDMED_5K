@@ -3,7 +3,12 @@
 import torch
 import torchvision.transforms as transforms
 from medmnist import INFO
+import os
+from pathlib import Path
 from torch.utils.data import DataLoader
+
+_DATA_MEDMNIST = Path("data/medmnist")
+MEDMNIST_ROOT = str(_DATA_MEDMNIST.resolve()) if _DATA_MEDMNIST.exists() else os.path.expanduser("~/.medmnist")
 
 
 # def get_bloodmnist_datasets(batch_size: int = 32, download: bool = True) :
@@ -53,9 +58,9 @@ def get_pathmnist_datasets(download: bool = True):
         transforms.ToTensor(),
         transforms.Normalize(mean=[.5, .5, .5], std=[.5, .5, .5])
     ])
-    train_ds = DataClass(split='train', transform=transform, download=download)
-    val_ds   = DataClass(split='val',   transform=transform, download=download)
-    test_ds  = DataClass(split='test',  transform=transform, download=download)
+    train_ds = DataClass(split='train', transform=transform, download=download, root=MEDMNIST_ROOT)
+    val_ds   = DataClass(split='val',   transform=transform, download=download, root=MEDMNIST_ROOT)
+    test_ds  = DataClass(split='test',  transform=transform, download=download, root=MEDMNIST_ROOT)
     return train_ds, val_ds, test_ds, 9
 
 
@@ -72,9 +77,9 @@ def get_organmnist_datasets(download: bool = True):
         transforms.ToTensor(),
         transforms.Normalize(mean=[.5], std=[.5])
     ])
-    train_ds = DataClass(split='train', transform=transform, download=download)
-    val_ds   = DataClass(split='val',   transform=transform, download=download)
-    test_ds  = DataClass(split='test',  transform=transform, download=download)
+    train_ds = DataClass(split='train', transform=transform, download=download, root=MEDMNIST_ROOT)
+    val_ds   = DataClass(split='val',   transform=transform, download=download, root=MEDMNIST_ROOT)
+    test_ds  = DataClass(split='test',  transform=transform, download=download, root=MEDMNIST_ROOT)
     return train_ds, val_ds, test_ds, 11
 
 

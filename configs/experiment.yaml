@@ -82,6 +82,7 @@ fl_strategies:
   - fedbn
   - fednova
   - scaffold
+  - scaffold_la
   - fednova_scaffold
 # Global Early Stopping (theo doi Round, khong phai Epoch)
 early_stopping:
@@ -113,6 +114,7 @@ fedsld_setup:
   momentum: 0.9
   weight_decay: 0.0001
   proximal_mu: 0.01
+  tau_la: 1.0
   partition_settings:
     practical_noniid:
       fl_rounds: 80
@@ -120,10 +122,14 @@ fedsld_setup:
       fl_rounds: 160
   fl_strategies:
     - fedavg
+    - fedavg_la
     - fedprox
+    - fedprox_la
     - fednova
     - scaffold
+    - scaffold_la
     - fednova_scaffold
+    - fedbn_scaffold_la
   early_stopping:
     enabled: false
     patience: 10
